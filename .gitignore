@@ -1,0 +1,11 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Safety nets (each plugin also ignores these locally)
+**/node_modules/
+**/dist/
+**/coverage/
+**/*.log
