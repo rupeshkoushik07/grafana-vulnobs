@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { css } from '@emotion/css';
+import React, { useMemo, useState } from 'react';
+import { css, cx } from '@emotion/css';
 import { GrafanaTheme2, SelectableValue } from '@grafana/data';
 import { PluginPage, getBackendSrv } from '@grafana/runtime';
 import {
@@ -57,6 +57,9 @@ const SEVERITY_COLOR: Record<string, BadgeColor> = {
   UNKNOWN: 'darkgrey',
 };
 
+// Highest severity first — used for the summary row and table ordering.
+const SEVERITY_ORDER = ['CRITICAL', 'HIGH', 'MODERATE', 'LOW', 'UNKNOWN'];
+
 function SearchPage() {
   const s = useStyles2(getStyles);
 
@@ -68,8 +71,24 @@ function SearchPage() {
   const [rows, setRows] = useState<VulnRow[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeSeverity, setActiveSeverity] = useState<string | null>(null);
 
   const canSearch = !!(pkg.trim() || vulnId.trim());
+
+  // Counts by severity, ordered highest-first, over the full result set.
+  const counts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const r of rows ?? []) {
+      c[r.severity] = (c[r.severity] ?? 0) + 1;
+    }
+    return SEVERITY_ORDER.filter((sev) => c[sev]).map((sev) => ({ severity: sev, count: c[sev] }));
+  }, [rows]);
+
+  // Table rows: sorted by severity, filtered to the active severity chip if any.
+  const visibleRows = useMemo(() => {
+    const filtered = (rows ?? []).filter((r) => !activeSeverity || r.severity === activeSeverity);
+    return [...filtered].sort((a, b) => b.severityScore - a.severityScore);
+  }, [rows, activeSeverity]);
 
   const onSearch = async () => {
     if (!canSearch) {
@@ -77,6 +96,7 @@ function SearchPage() {
     }
     setLoading(true);
     setError(null);
+    setActiveSeverity(null);
     try {
       const params: Record<string, string> = {};
       if (vulnId.trim()) {
@@ -174,8 +194,35 @@ function SearchPage() {
           )}
           {!loading && !error && rows && rows.length > 0 && (
             <>
-              <p className={s.count}>{rows.length} vulnerabilit{rows.length === 1 ? 'y' : 'ies'} found</p>
-              <InteractiveTable columns={columns} data={rows} getRowId={(r) => r.id} />
+              <p className={s.count}>
+                {rows.length} vulnerabilit{rows.length === 1 ? 'y' : 'ies'} found
+                {activeSeverity && ` — showing ${visibleRows.length} ${activeSeverity}`}
+              </p>
+
+              <div className={s.summary}>
+                {counts.map(({ severity, count }) => {
+                  const active = activeSeverity === severity;
+                  return (
+                    <button
+                      key={severity}
+                      type="button"
+                      className={cx(s.chip, active && s.chipActive)}
+                      onClick={() => setActiveSeverity(active ? null : severity)}
+                      aria-pressed={active}
+                    >
+                      <Badge text={String(count)} color={SEVERITY_COLOR[severity] ?? 'darkgrey'} />
+                      <span className={s.chipLabel}>{severity}</span>
+                    </button>
+                  );
+                })}
+                {activeSeverity && (
+                  <button type="button" className={s.chip} onClick={() => setActiveSeverity(null)}>
+                    <span className={s.chipLabel}>Clear filter</span>
+                  </button>
+                )}
+              </div>
+
+              <InteractiveTable columns={columns} data={visibleRows} getRowId={(r) => r.id} />
             </>
           )}
         </div>
@@ -197,6 +244,33 @@ const getStyles = (theme: GrafanaTheme2) => ({
   count: css`
     color: ${theme.colors.text.secondary};
     margin-bottom: ${theme.spacing(1)};
+  `,
+  summary: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: ${theme.spacing(1)};
+    margin-bottom: ${theme.spacing(2)};
+  `,
+  chip: css`
+    display: inline-flex;
+    align-items: center;
+    gap: ${theme.spacing(0.5)};
+    padding: ${theme.spacing(0.5, 1)};
+    background: ${theme.colors.background.secondary};
+    border: 1px solid ${theme.colors.border.weak};
+    border-radius: ${theme.shape.radius.default};
+    cursor: pointer;
+    &:hover {
+      background: ${theme.colors.action.hover};
+    }
+  `,
+  chipActive: css`
+    border-color: ${theme.colors.primary.border};
+    background: ${theme.colors.action.selected};
+  `,
+  chipLabel: css`
+    color: ${theme.colors.text.primary};
+    font-size: ${theme.typography.bodySmall.fontSize};
   `,
   link: css`
     color: ${theme.colors.text.link};
