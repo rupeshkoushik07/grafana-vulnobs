@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -67,6 +68,122 @@ func mapEcosystem(t string) string {
 	}
 }
 
+// parsePurl parses a Package URL (purl) into an OSV-mapped pkgRef.
+// e.g. "pkg:npm/%40angular/core@12.0.0" -> {npm, @angular/core, 12.0.0}.
+// Returns ok=false for types OSV can't resolve.
+// Spec: https://github.com/package-url/purl-spec
+func parsePurl(purl string) (pkgRef, bool) {
+	s := strings.TrimSpace(purl)
+	if !strings.HasPrefix(s, "pkg:") {
+		return pkgRef{}, false
+	}
+	s = strings.TrimPrefix(s, "pkg:")
+
+	// Strip subpath (#...) then split off qualifiers (?...).
+	if i := strings.IndexByte(s, '#'); i >= 0 {
+		s = s[:i]
+	}
+	var qualifiers string
+	if i := strings.IndexByte(s, '?'); i >= 0 {
+		qualifiers = s[i+1:]
+		s = s[:i]
+	}
+
+	// Split version off the end (last '@').
+	version := ""
+	if i := strings.LastIndexByte(s, '@'); i >= 0 {
+		version = s[i+1:]
+		s = s[:i]
+	}
+
+	// s is now "type/namespace.../name".
+	typ, rest, ok := strings.Cut(s, "/")
+	if !ok {
+		return pkgRef{}, false
+	}
+	namespace, name := "", rest
+	if i := strings.LastIndexByte(rest, '/'); i >= 0 {
+		namespace, name = rest[:i], rest[i+1:]
+	}
+
+	namespace = urlDecode(namespace)
+	name = urlDecode(name)
+	version = urlDecode(version)
+
+	eco := purlEcosystem(typ, qualifiers)
+	if eco == "" {
+		return pkgRef{}, false
+	}
+
+	// Construct the OSV package name per ecosystem naming rules.
+	full := name
+	switch strings.ToLower(typ) {
+	case "golang", "composer", "npm":
+		if namespace != "" {
+			full = namespace + "/" + name
+		}
+	case "maven":
+		if namespace != "" {
+			full = namespace + ":" + name
+		}
+	}
+	return pkgRef{Ecosystem: eco, Name: full, Version: version}, true
+}
+
+// purlEcosystem maps a purl type (plus qualifiers, for OS packages) to an OSV
+// ecosystem, or "" if unsupported.
+func purlEcosystem(typ, qualifiers string) string {
+	t := strings.ToLower(typ)
+	switch t {
+	case "deb":
+		if d := distroVersion(qualifiers, "debian-"); d != "" {
+			return "Debian:" + d
+		}
+		return ""
+	case "apk":
+		if d := distroVersion(qualifiers, "alpine-"); d != "" {
+			return "Alpine:v" + d
+		}
+		return ""
+	case "golang":
+		t = "go"
+	case "pypi":
+		t = "python"
+	}
+	// Language types resolve through the shared scanner-ecosystem table.
+	return mapEcosystem(t)
+}
+
+// distroVersion pulls e.g. "11" from "distro=debian-11" or "3.18" from
+// "distro=alpine-3.18.4" (major.minor) in a purl qualifier string.
+func distroVersion(qualifiers, prefix string) string {
+	for _, kv := range strings.Split(qualifiers, "&") {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k != "distro" {
+			continue
+		}
+		if !strings.HasPrefix(v, prefix) {
+			return ""
+		}
+		ver := strings.TrimPrefix(v, prefix)
+		if prefix == "alpine-" {
+			parts := strings.Split(ver, ".")
+			if len(parts) >= 2 {
+				return parts[0] + "." + parts[1]
+			}
+		}
+		return ver
+	}
+	return ""
+}
+
+func urlDecode(s string) string {
+	if d, err := url.PathUnescape(s); err == nil {
+		return d
+	}
+	return s
+}
+
 // --- Trivy ---
 
 type trivyReport struct {
@@ -99,6 +216,35 @@ type grypeReport struct {
 	} `json:"source"`
 }
 
+// --- CycloneDX SBOM ---
+
+type cyclonedxBOM struct {
+	Metadata struct {
+		Component struct {
+			Name string `json:"name"`
+		} `json:"component"`
+	} `json:"metadata"`
+	Components []struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+		PURL    string `json:"purl"`
+	} `json:"components"`
+}
+
+// --- SPDX SBOM ---
+
+type spdxDoc struct {
+	Name     string `json:"name"`
+	Packages []struct {
+		Name         string `json:"name"`
+		VersionInfo  string `json:"versionInfo"`
+		ExternalRefs []struct {
+			ReferenceType    string `json:"referenceType"`
+			ReferenceLocator string `json:"referenceLocator"`
+		} `json:"externalRefs"`
+	} `json:"packages"`
+}
+
 // parseScan detects the scan format and extracts a deduplicated package list.
 // skippedOS counts packages dropped because their ecosystem isn't an OSV
 // language feed we can query.
@@ -125,8 +271,44 @@ func parseScan(raw []byte) (format, image string, pkgs []pkgRef, skippedOS int, 
 		seen[key] = true
 		pkgs = append(pkgs, pkgRef{Ecosystem: eco, Name: name, Version: version})
 	}
+	// addPurl adds a package from a purl, or counts it as skipped when the purl
+	// is absent or its ecosystem isn't one OSV can resolve.
+	addPurl := func(purl string) {
+		if p, ok := parsePurl(purl); ok {
+			add(p.Ecosystem, p.Name, p.Version)
+			return
+		}
+		skippedOS++
+	}
 
 	switch {
+	case probe["bomFormat"] != nil || probe["components"] != nil:
+		format = "cyclonedx"
+		var b cyclonedxBOM
+		if err = json.Unmarshal(raw, &b); err != nil {
+			return "", "", nil, 0, fmt.Errorf("parse CycloneDX SBOM: %w", err)
+		}
+		image = b.Metadata.Component.Name
+		for _, c := range b.Components {
+			addPurl(c.PURL)
+		}
+	case probe["spdxVersion"] != nil || probe["SPDXID"] != nil:
+		format = "spdx"
+		var doc spdxDoc
+		if err = json.Unmarshal(raw, &doc); err != nil {
+			return "", "", nil, 0, fmt.Errorf("parse SPDX SBOM: %w", err)
+		}
+		image = doc.Name
+		for _, p := range doc.Packages {
+			purl := ""
+			for _, ref := range p.ExternalRefs {
+				if strings.EqualFold(ref.ReferenceType, "purl") {
+					purl = ref.ReferenceLocator
+					break
+				}
+			}
+			addPurl(purl)
+		}
 	case probe["matches"] != nil:
 		format = "grype"
 		var g grypeReport
@@ -159,7 +341,7 @@ func parseScan(raw []byte) (format, image string, pkgs []pkgRef, skippedOS int, 
 			}
 		}
 	default:
-		return "", "", nil, 0, fmt.Errorf("unrecognized scan format (expected Trivy or Grype JSON)")
+		return "", "", nil, 0, fmt.Errorf("unrecognized format (expected Trivy, Grype, CycloneDX, or SPDX JSON)")
 	}
 
 	return format, image, pkgs, skippedOS, nil

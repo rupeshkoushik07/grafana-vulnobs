@@ -106,9 +106,10 @@ function ScanPage() {
     <PluginPage>
       <div data-testid={testIds.scan.container}>
         <p className={s.intro}>
-          Upload a <strong>Trivy</strong> or <strong>Grype</strong> JSON report. Vulnobs extracts its package
-          inventory and matches every package against <a href="https://osv.dev" target="_blank" rel="noreferrer">OSV</a>{' '}
-          live — so you see the vulnerabilities known <em>right now</em>, including ones published after the scan was taken.
+          Upload a <strong>Trivy</strong>, <strong>Grype</strong>, <strong>CycloneDX</strong>, or{' '}
+          <strong>SPDX</strong> report. Vulnobs extracts its package inventory and matches every package against{' '}
+          <a href="https://osv.dev" target="_blank" rel="noreferrer">OSV</a> live — so you see the vulnerabilities known{' '}
+          <em>right now</em>, including ones published after the scan was taken.
         </p>
 
         <div data-testid={testIds.scan.dropzone}>

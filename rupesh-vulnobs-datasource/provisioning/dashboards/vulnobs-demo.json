@@ -1,0 +1,72 @@
+{
+  "uid": "vulnobs-demo",
+  "title": "Vulnobs — OSV demo",
+  "tags": ["vulnobs", "security", "cve"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "About",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "This dashboard queries the **Vulnobs OSV** data source live against [OSV](https://osv.dev). Each panel below lists the known vulnerabilities for a package. Edit a panel's query to try your own ecosystem + package, or a CVE / GHSA id."
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "npm: lodash",
+      "gridPos": { "h": 11, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "rupesh-vulnobs-datasource", "uid": "vulnobs-osv" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "rupesh-vulnobs-datasource", "uid": "vulnobs-osv" },
+          "ecosystem": "npm",
+          "package": "lodash"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "filterable": true } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "url" },
+            "properties": [{ "id": "custom.hidden", "value": true }]
+          }
+        ]
+      },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Go: github.com/gin-gonic/gin",
+      "gridPos": { "h": 11, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "rupesh-vulnobs-datasource", "uid": "vulnobs-osv" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "rupesh-vulnobs-datasource", "uid": "vulnobs-osv" },
+          "ecosystem": "Go",
+          "package": "github.com/gin-gonic/gin"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "filterable": true } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "url" },
+            "properties": [{ "id": "custom.hidden", "value": true }]
+          }
+        ]
+      },
+      "options": { "showHeader": true }
+    }
+  ]
+}
