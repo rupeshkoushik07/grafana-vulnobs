@@ -1,0 +1,23 @@
+{
+  "ArtifactName": "myapp:latest",
+  "Results": [
+    {
+      "Type": "npm",
+      "Packages": [
+        { "Name": "lodash", "Version": "4.17.15" },
+        { "Name": "minimist", "Version": "1.2.0" },
+        { "Name": "express", "Version": "4.17.1" }
+      ]
+    },
+    {
+      "Type": "gobinary",
+      "Packages": [
+        { "Name": "github.com/gin-gonic/gin", "Version": "v1.6.0" }
+      ]
+    },
+    {
+      "Type": "debian",
+      "Packages": [{ "Name": "bash", "Version": "5.0-4" }]
+    }
+  ]
+}
