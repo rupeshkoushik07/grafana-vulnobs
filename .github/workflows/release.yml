@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Package ${{ matrix.plugin }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: [rupesh-vulnobs-app, rupesh-vulnobs-datasource]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ${{ matrix.plugin }}/package-lock.json
+
+      - name: Install & build frontend
+        working-directory: ${{ matrix.plugin }}
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.plugin }}/go.mod
+          cache-dependency-path: ${{ matrix.plugin }}/go.sum
+
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+
+      - name: Build backend (all architectures)
+        working-directory: ${{ matrix.plugin }}
+        run: mage -v buildAll
+
+      # Signing is optional: it only runs when a Grafana access-policy token is
+      # configured as a repo secret. Without it we still ship an unsigned build.
+      - name: Sign plugin
+        working-directory: ${{ matrix.plugin }}
+        env:
+          GRAFANA_ACCESS_POLICY_TOKEN: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN }}
+        run: |
+          if [ -n "$GRAFANA_ACCESS_POLICY_TOKEN" ]; then
+            npm run sign
+          else
+            echo "::warning::No GRAFANA_ACCESS_POLICY_TOKEN secret set — producing an UNSIGNED build."
+          fi
+
+      - name: Package
+        working-directory: ${{ matrix.plugin }}
+        run: |
+          mv dist "${{ matrix.plugin }}"
+          zip -r "../${{ matrix.plugin }}-${{ github.ref_name }}.zip" "${{ matrix.plugin }}"
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.plugin }}-${{ github.ref_name }}.zip
+          generate_release_notes: true

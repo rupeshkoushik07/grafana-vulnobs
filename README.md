@@ -1,5 +1,8 @@
 # Grafana Vulnerability Observability
 
+[![CI](https://github.com/rupeshkoushik07/grafana-vulnobs/actions/workflows/ci.yml/badge.svg)](https://github.com/rupeshkoushik07/grafana-vulnobs/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
 Bring vulnerability observability into Grafana. Query public CVE feeds, browse the
 vulnerabilities affecting your scanned containers and repositories, and alert natively
 when new critical CVEs hit your stack — all alongside your existing metrics, logs, and traces.
@@ -23,10 +26,58 @@ Two plugins in one repo, built to grow in phases:
 | Plugin | Directory | Role |
 | --- | --- | --- |
 | **Data source** (Go backend) | [`rupesh-vulnobs-datasource/`](./rupesh-vulnobs-datasource) | Queries public CVE feeds. Works in Explore, dashboards, and — because it has a backend — **Grafana alert rules**. This is the Phase 1 focus. |
-| **App** | [`rupesh-vulnobs-app/`](./rupesh-vulnobs-app) | Custom pages for browsing assets, searching CVEs, and a posture overview. Bundles and consumes the data source. Phase 2. |
+| **App** | [`rupesh-vulnobs-app/`](./rupesh-vulnobs-app) | Custom pages (**Search**, **Scan**) for searching CVEs and viewing the posture of a scanned image. Its Go backend calls OSV directly via resource endpoints. |
 
 Only a backend **data source** can be used in Grafana Alerting, which is why the alertable
-primitive lives there and the app is layered on top.
+primitive lives there; the app is layered alongside for interactive browsing.
+
+```mermaid
+flowchart TB
+    user(["User&nbsp;/&nbsp;Browser"])
+
+    subgraph grafana["Grafana"]
+        direction TB
+        dashes["Dashboards&nbsp;·&nbsp;Explore"]
+        alerting["Grafana Alerting"]
+
+        subgraph app["App plugin — rupesh-vulnobs-app"]
+            direction TB
+            appfe["Frontend pages<br/>Search · Scan"]
+            appbe["Go backend<br/>/resources/search<br/>/resources/scan"]
+            appfe -->|"getBackendSrv()"| appbe
+        end
+
+        subgraph ds["Data source plugin — rupesh-vulnobs-datasource"]
+            direction TB
+            dsfe["Query &amp; Config editors"]
+            dsbe["Go backend<br/>QueryData · CheckHealth"]
+            dsfe --> dsbe
+        end
+    end
+
+    osv[("OSV API<br/>api.osv.dev")]
+
+    user --> appfe
+    user --> dashes
+    dashes -->|"/api/ds/query"| dsbe
+    alerting -->|"rule evaluation"| dsbe
+    appbe -->|"HTTPS: /v1/query · /v1/querybatch"| osv
+    dsbe -->|"HTTPS: /v1/query"| osv
+```
+
+### Data flow
+
+- **Search / Scan (app):** the React page calls the app's own Go backend over
+  `getBackendSrv()` → `/api/plugins/rupesh-vulnobs-app/resources/{search,scan}`. The backend
+  queries OSV live, parses the response, and returns rows. **Scan** additionally parses a
+  Trivy/Grype report, extracts the package inventory, and matches every package against OSV —
+  so results reflect vulnerabilities known *now*, not the scan's snapshot.
+- **Dashboards / Alerting (data source):** panels and alert rules issue queries to the data
+  source backend (`QueryData`), which calls OSV and returns Grafana **data frames**. Only this
+  backend path can feed native alert rules.
+- **No secrets required:** OSV needs no authentication. The optional API-key field is reserved
+  for NVD / GitHub Advisory enrichment in a later phase and is stored in `secureJsonData`
+  (backend-only, never sent to the browser).
 
 ## Roadmap
 

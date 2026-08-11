@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: ${{ matrix.plugin }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: [rupesh-vulnobs-app, rupesh-vulnobs-datasource]
+    defaults:
+      run:
+        working-directory: ${{ matrix.plugin }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Frontend ---
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ${{ matrix.plugin }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Unit tests (frontend)
+        run: npm run test:ci
+
+      - name: Build frontend
+        run: npm run build
+
+      # --- Backend (Go) ---
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.plugin }}/go.mod
+          cache-dependency-path: ${{ matrix.plugin }}/go.sum
+
+      - name: Vet & test (backend)
+        run: |
+          go vet ./pkg/...
+          go test ./pkg/...
+
+      - name: Install mage
+        run: go install github.com/magefile/mage@latest
+
+      - name: Build backend
+        run: mage -v build:linux
