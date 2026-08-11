@@ -9,17 +9,17 @@ export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
   const { jsonData, secureJsonFields, secureJsonData } = options;
 
-  const onPathChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const onBaseUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({
       ...options,
       jsonData: {
         ...jsonData,
-        path: event.target.value,
+        osvBaseUrl: event.target.value,
       },
     });
   };
 
-  // Secure field (only sent to the backend)
+  // Secure field (only sent to the backend). Reserved for enrichment feeds.
   const onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({
       ...options,
@@ -45,22 +45,31 @@ export function ConfigEditor(props: Props) {
 
   return (
     <>
-      <InlineField label="Path" labelWidth={14} interactive tooltip={'Json field returned to frontend'}>
+      <InlineField
+        label="OSV API URL"
+        labelWidth={18}
+        interactive
+        tooltip={'Base URL of the OSV API. Leave blank to use https://api.osv.dev'}
+      >
         <Input
-          id="config-editor-path"
-          onChange={onPathChange}
-          value={jsonData.path}
-          placeholder="Enter the path, e.g. /api/v1"
+          id="config-editor-osv-url"
+          onChange={onBaseUrlChange}
+          value={jsonData.osvBaseUrl}
+          placeholder="https://api.osv.dev"
           width={40}
         />
       </InlineField>
-      <InlineField label="API Key" labelWidth={14} interactive tooltip={'Secure json field (backend only)'}>
+      <InlineField
+        label="API Key (optional)"
+        labelWidth={18}
+        interactive
+        tooltip={'Reserved for NVD / GitHub Advisory enrichment (later phase). Not required for OSV.'}
+      >
         <SecretInput
-          required
           id="config-editor-api-key"
           isConfigured={secureJsonFields.apiKey}
           value={secureJsonData?.apiKey}
-          placeholder="Enter your API key"
+          placeholder="not required for OSV"
           width={40}
           onReset={onResetAPIKey}
           onChange={onAPIKeyChange}

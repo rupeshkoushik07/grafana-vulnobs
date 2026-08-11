@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
-	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/rupesh/vulnobs/pkg/models"
 )
 
@@ -24,13 +25,23 @@ var (
 )
 
 // NewDatasource creates a new datasource instance.
-func NewDatasource(_ context.Context, _ backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
-	return &Datasource{}, nil
+func NewDatasource(_ context.Context, s backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
+	settings, err := models.LoadPluginSettings(s)
+	if err != nil {
+		return nil, err
+	}
+	return &Datasource{
+		baseURL:    strings.TrimRight(settings.OsvBaseURL, "/"),
+		httpClient: &http.Client{Timeout: 15 * time.Second},
+	}, nil
 }
 
-// Datasource is an example datasource which can respond to data queries, reports
-// its health and has streaming skills.
-type Datasource struct{}
+// Datasource queries public vulnerability feeds (OSV) and returns the results as
+// Grafana data frames.
+type Datasource struct {
+	baseURL    string
+	httpClient *http.Client
+}
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
 // created. As soon as datasource settings change detected by SDK old datasource instance will
@@ -59,33 +70,49 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 	return response, nil
 }
 
-type queryModel struct{}
+type queryModel struct {
+	Ecosystem string `json:"ecosystem"`
+	Package   string `json:"package"`
+	Version   string `json:"version"`
+	VulnID    string `json:"vulnId"`
+}
 
-func (d *Datasource) query(_ context.Context, pCtx backend.PluginContext, query backend.DataQuery) backend.DataResponse {
+func (d *Datasource) query(ctx context.Context, _ backend.PluginContext, query backend.DataQuery) backend.DataResponse {
 	var response backend.DataResponse
 
-	// Unmarshal the JSON into our queryModel.
 	var qm queryModel
-
-	err := json.Unmarshal(query.JSON, &qm)
-	if err != nil {
-		return backend.ErrDataResponse(backend.StatusBadRequest, fmt.Sprintf("json unmarshal: %v", err.Error()))
+	if len(query.JSON) > 0 {
+		if err := json.Unmarshal(query.JSON, &qm); err != nil {
+			return backend.ErrDataResponse(backend.StatusBadRequest, fmt.Sprintf("json unmarshal: %v", err.Error()))
+		}
 	}
 
-	// create data frame response.
-	// For an overview on data frames and how grafana handles them:
-	// https://grafana.com/developers/plugin-tools/introduction/data-frames
-	frame := data.NewFrame("response")
+	qm.Ecosystem = strings.TrimSpace(qm.Ecosystem)
+	qm.Package = strings.TrimSpace(qm.Package)
+	qm.Version = strings.TrimSpace(qm.Version)
+	qm.VulnID = strings.TrimSpace(qm.VulnID)
 
-	// add fields.
-	frame.Fields = append(frame.Fields,
-		data.NewField("time", nil, []time.Time{query.TimeRange.From, query.TimeRange.To}),
-		data.NewField("values", nil, []int64{10, 20}),
-	)
+	// Mode 1: direct lookup of a single vulnerability by id (CVE / GHSA / OSV id).
+	if qm.VulnID != "" {
+		v, err := d.osvGetVuln(ctx, qm.VulnID)
+		if err != nil {
+			return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("OSV lookup failed: %v", err))
+		}
+		response.Frames = append(response.Frames, vulnsToFrame("vulnerabilities", []osvVuln{*v}))
+		return response
+	}
 
-	// add the frames to the response.
-	response.Frames = append(response.Frames, frame)
+	// Mode 2: all vulnerabilities affecting a package (optionally a version).
+	if qm.Package == "" {
+		return backend.ErrDataResponse(backend.StatusBadRequest, "provide a package name (with ecosystem) or a vulnerability id")
+	}
 
+	vulns, err := d.osvQueryPackage(ctx, qm.Ecosystem, qm.Package, qm.Version)
+	if err != nil {
+		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("OSV query failed: %v", err))
+	}
+
+	response.Frames = append(response.Frames, vulnsToFrame("vulnerabilities", vulns))
 	return response
 }
 
@@ -93,24 +120,17 @@ func (d *Datasource) query(_ context.Context, pCtx backend.PluginContext, query 
 // The main use case for these health checks is the test button on the
 // datasource configuration page which allows users to verify that
 // a datasource is working as expected.
-func (d *Datasource) CheckHealth(_ context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
-	res := &backend.CheckHealthResult{}
-	config, err := models.LoadPluginSettings(*req.PluginContext.DataSourceInstanceSettings)
-
-	if err != nil {
-		res.Status = backend.HealthStatusError
-		res.Message = "Unable to load settings"
-		return res, nil
-	}
-
-	if config.Secrets.ApiKey == "" {
-		res.Status = backend.HealthStatusError
-		res.Message = "API key is missing"
-		return res, nil
+func (d *Datasource) CheckHealth(ctx context.Context, _ *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
+	// A lightweight live query confirms we can reach and parse the OSV API.
+	if _, err := d.osvQueryPackage(ctx, "npm", "lodash", ""); err != nil {
+		return &backend.CheckHealthResult{
+			Status:  backend.HealthStatusError,
+			Message: fmt.Sprintf("Could not reach OSV at %s: %v", d.baseURL, err),
+		}, nil
 	}
 
 	return &backend.CheckHealthResult{
 		Status:  backend.HealthStatusOk,
-		Message: "Data source is working",
+		Message: fmt.Sprintf("Connected to OSV at %s", d.baseURL),
 	}, nil
 }

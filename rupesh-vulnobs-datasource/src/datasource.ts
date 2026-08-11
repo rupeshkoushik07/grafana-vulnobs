@@ -13,14 +13,17 @@ export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptio
   }
 
   applyTemplateVariables(query: MyQuery, scopedVars: ScopedVars) {
+    const tsrv = getTemplateSrv();
     return {
       ...query,
-      queryText: getTemplateSrv().replace(query.queryText, scopedVars),
+      package: query.package ? tsrv.replace(query.package, scopedVars) : query.package,
+      version: query.version ? tsrv.replace(query.version, scopedVars) : query.version,
+      vulnId: query.vulnId ? tsrv.replace(query.vulnId, scopedVars) : query.vulnId,
     };
   }
 
   filterQuery(query: MyQuery): boolean {
-    // if no query has been provided, prevent the query from being executed
-    return !!query.queryText;
+    // Only run when there is something to look up.
+    return !!(query.package || query.vulnId);
   }
 }
