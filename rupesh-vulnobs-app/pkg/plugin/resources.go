@@ -3,42 +3,64 @@ package plugin
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
-// handlePing is an example HTTP GET resource that returns a {"message": "ok"} JSON response.
-func (a *App) handlePing(w http.ResponseWriter, req *http.Request) {
-	w.Header().Add("Content-Type", "application/json")
-	if _, err := w.Write([]byte(`{"message": "ok"}`)); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+// handleSearch queries the OSV feed and returns matching vulnerabilities.
+//
+// Query params:
+//   - vulnId:    look up a single CVE / GHSA / OSV id directly (takes precedence)
+//   - ecosystem: package ecosystem, e.g. npm, Go, PyPI (used with package)
+//   - package:   package name, e.g. lodash
+//   - version:   optional; limit to vulns affecting this version
+func (a *App) handleSearch(w http.ResponseWriter, req *http.Request) {
+	q := req.URL.Query()
+	vulnID := strings.TrimSpace(q.Get("vulnId"))
+	ecosystem := strings.TrimSpace(q.Get("ecosystem"))
+	pkg := strings.TrimSpace(q.Get("package"))
+	version := strings.TrimSpace(q.Get("version"))
+
+	ctx := req.Context()
+
+	// Mode 1: direct lookup by id.
+	if vulnID != "" {
+		v, err := a.osvGetVuln(ctx, vulnID)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, map[string]any{"vulns": toRows([]osvVuln{*v})})
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+
+	// Mode 2: package query.
+	if pkg == "" {
+		writeError(w, http.StatusBadRequest, "provide a package name (with ecosystem) or a vulnId")
+		return
+	}
+
+	vulns, err := a.osvQueryPackage(ctx, ecosystem, pkg, version)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"vulns": toRows(vulns)})
 }
 
-// handleEcho is an example HTTP POST resource that accepts a JSON with a "message" key and
-// returns to the client whatever it is sent.
-func (a *App) handleEcho(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var body struct {
-		Message string `json:"message"`
-	}
-	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	w.Header().Add("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(body); err != nil {
+func writeJSON(w http.ResponseWriter, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
 	}
-	w.WriteHeader(http.StatusOK)
 }
 
-// registerRoutes takes a *http.ServeMux and registers some HTTP handlers.
+func writeError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// registerRoutes maps HTTP handlers onto the app's resource mux.
 func (a *App) registerRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/ping", a.handlePing)
-	mux.HandleFunc("/echo", a.handleEcho)
+	mux.HandleFunc("/search", a.handleSearch)
 }

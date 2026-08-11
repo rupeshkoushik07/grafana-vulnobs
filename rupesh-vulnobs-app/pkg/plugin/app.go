@@ -2,7 +2,10 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
@@ -19,14 +22,30 @@ var (
 	_ backend.CheckHealthHandler    = (*App)(nil)
 )
 
-// App is an example app plugin with a backend which can respond to data queries.
+// App is the Vulnobs app backend. It exposes resources the app pages call to
+// browse and search public vulnerability feeds (OSV).
 type App struct {
 	backend.CallResourceHandler
+	baseURL    string
+	httpClient *http.Client
 }
 
-// NewApp creates a new example *App instance.
-func NewApp(_ context.Context, _ backend.AppInstanceSettings) (instancemgmt.Instance, error) {
-	var app App
+// NewApp creates a new *App instance.
+func NewApp(_ context.Context, settings backend.AppInstanceSettings) (instancemgmt.Instance, error) {
+	app := App{
+		baseURL:    DefaultOsvBaseURL,
+		httpClient: &http.Client{Timeout: 15 * time.Second},
+	}
+
+	// Optional override of the OSV base URL via the app's jsonData.
+	if len(settings.JSONData) > 0 {
+		var cfg struct {
+			OsvBaseURL string `json:"osvBaseUrl"`
+		}
+		if err := json.Unmarshal(settings.JSONData, &cfg); err == nil && cfg.OsvBaseURL != "" {
+			app.baseURL = strings.TrimRight(cfg.OsvBaseURL, "/")
+		}
+	}
 
 	// Use a httpadapter (provided by the SDK) for resource calls. This allows us
 	// to use a *http.ServeMux for resource calls, so we can map multiple routes

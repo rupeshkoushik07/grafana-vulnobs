@@ -48,24 +48,10 @@ func TestCallResource(t *testing.T) {
 		expBody   []byte
 	}{
 		{
-			name:      "get ping 200",
+			name:      "search without package or vulnId 400",
 			method:    http.MethodGet,
-			path:      "ping",
-			expStatus: http.StatusOK,
-		},
-		{
-			name:      "get echo 405",
-			method:    http.MethodGet,
-			path:      "echo",
-			expStatus: http.StatusMethodNotAllowed,
-		},
-		{
-			name:      "post echo 200",
-			method:    http.MethodPost,
-			path:      "echo",
-			body:      []byte(`{"message":"ok"}`),
-			expStatus: http.StatusOK,
-			expBody:   []byte(`{"message":"ok"}`),
+			path:      "search",
+			expStatus: http.StatusBadRequest,
 		},
 		{
 			name:      "get non existing handler 404",
