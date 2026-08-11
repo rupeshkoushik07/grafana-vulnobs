@@ -1,6 +1,6 @@
 {
   "name": "vulnobs",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "scripts": {
     "build": "webpack -c ./.config/webpack/webpack.config.ts --env production",
     "dev": "webpack -w -c ./.config/webpack/webpack.config.ts --env development",
@@ -71,8 +71,8 @@
     "@grafana/data": "13.1.0",
     "@grafana/i18n": "13.1.0",
     "@grafana/runtime": "13.1.0",
-    "@grafana/ui": "13.1.0",
     "@grafana/schema": "13.1.0",
+    "@grafana/ui": "13.1.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0"
   },

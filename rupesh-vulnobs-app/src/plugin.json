@@ -6,15 +6,26 @@
   "backend": true,
   "executable": "gpx_vulnobs",
   "info": {
-    "keywords": ["app"],
-    "description": "",
+    "keywords": ["app", "security", "vulnerability", "cve", "osv", "observability"],
+    "description": "Vulnerability observability in Grafana — search public CVE feeds (OSV) and see which vulnerabilities affect your scanned containers and repositories.",
     "author": {
-      "name": "Rupesh"
+      "name": "Rupesh Punna",
+      "url": "https://github.com/rupeshkoushik07"
     },
     "logos": {
       "small": "img/logo.svg",
       "large": "img/logo.svg"
     },
+    "links": [
+      {
+        "name": "Website",
+        "url": "https://github.com/rupeshkoushik07/grafana-vulnobs"
+      },
+      {
+        "name": "Report an issue",
+        "url": "https://github.com/rupeshkoushik07/grafana-vulnobs/issues"
+      }
+    ],
     "screenshots": [],
     "version": "%VERSION%",
     "updated": "%TODAY%"

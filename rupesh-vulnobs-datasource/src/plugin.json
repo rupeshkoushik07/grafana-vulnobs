@@ -7,16 +7,26 @@
   "backend": true,
   "executable": "gpx_vulnobs",
   "info": {
-    "description": "",
+    "description": "Query public vulnerability feeds (OSV) from Grafana dashboards, Explore, and alert rules.",
     "author": {
-      "name": "Rupesh"
+      "name": "Rupesh Punna",
+      "url": "https://github.com/rupeshkoushik07"
     },
-    "keywords": ["datasource"],
+    "keywords": ["datasource", "security", "vulnerability", "cve", "osv", "observability"],
     "logos": {
       "small": "img/logo.svg",
       "large": "img/logo.svg"
     },
-    "links": [],
+    "links": [
+      {
+        "name": "Website",
+        "url": "https://github.com/rupeshkoushik07/grafana-vulnobs"
+      },
+      {
+        "name": "Report an issue",
+        "url": "https://github.com/rupeshkoushik07/grafana-vulnobs/issues"
+      }
+    ],
     "screenshots": [],
     "version": "%VERSION%",
     "updated": "%TODAY%"
