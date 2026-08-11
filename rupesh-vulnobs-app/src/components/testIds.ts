@@ -9,4 +9,8 @@ export const testIds = {
     package: 'data-testid search-package',
     submit: 'data-testid search-submit',
   },
+  scan: {
+    container: 'data-testid scan-container',
+    dropzone: 'data-testid scan-dropzone',
+  },
 };

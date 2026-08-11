@@ -5,7 +5,6 @@ import { PluginPage, getBackendSrv } from '@grafana/runtime';
 import {
   Alert,
   Badge,
-  BadgeColor,
   Button,
   InlineField,
   Input,
@@ -18,6 +17,7 @@ import {
 } from '@grafana/ui';
 import pluginJson from '../plugin.json';
 import { testIds } from '../components/testIds';
+import { SEVERITY_ORDER, severityColor } from '../severity';
 
 const SEARCH_URL = `/api/plugins/${pluginJson.id}/resources/search`;
 
@@ -48,17 +48,6 @@ interface VulnRow {
   modified: string;
   url: string;
 }
-
-const SEVERITY_COLOR: Record<string, BadgeColor> = {
-  CRITICAL: 'red',
-  HIGH: 'orange',
-  MODERATE: 'purple',
-  LOW: 'blue',
-  UNKNOWN: 'darkgrey',
-};
-
-// Highest severity first — used for the summary row and table ordering.
-const SEVERITY_ORDER = ['CRITICAL', 'HIGH', 'MODERATE', 'LOW', 'UNKNOWN'];
 
 function SearchPage() {
   const s = useStyles2(getStyles);
@@ -123,7 +112,7 @@ function SearchPage() {
       id: 'severity',
       header: 'Severity',
       cell: ({ row: { original: r } }) => (
-        <Badge text={r.severity} color={SEVERITY_COLOR[r.severity] ?? 'darkgrey'} />
+        <Badge text={r.severity} color={severityColor(r.severity)} />
       ),
     },
     {
@@ -210,7 +199,7 @@ function SearchPage() {
                       onClick={() => setActiveSeverity(active ? null : severity)}
                       aria-pressed={active}
                     >
-                      <Badge text={String(count)} color={SEVERITY_COLOR[severity] ?? 'darkgrey'} />
+                      <Badge text={String(count)} color={severityColor(severity)} />
                       <span className={s.chipLabel}>{severity}</span>
                     </button>
                   );

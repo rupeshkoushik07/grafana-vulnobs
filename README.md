@@ -4,7 +4,7 @@ Bring vulnerability observability into Grafana. Query public CVE feeds, browse t
 vulnerabilities affecting your scanned containers and repositories, and alert natively
 when new critical CVEs hit your stack — all alongside your existing metrics, logs, and traces.
 
-> **Status:** early development · Phase 1 in progress · public data only. This project reads
+> **Status:** early development · Phase 1 done, Phase 2 in progress · public data only. This project reads
 > exclusively from public vulnerability feeds ([OSV](https://osv.dev),
 > [NVD](https://nvd.nist.gov), [GitHub Advisory Database](https://github.com/advisories))
 > and user-supplied scan output. It has no dependency on any private or internal system.
@@ -30,17 +30,18 @@ primitive lives there and the app is layered on top.
 
 ## Roadmap
 
-### Phase 1 — CVE query data source (in progress)
-- Backend Go data source querying **OSV** (free, no auth, batch package lookups)
-- Query editor: pick ecosystem (npm, Go, PyPI, Maven, …) + package (+ optional version)
-- Returns a table of vulnerabilities: id, severity (CVSS), summary, affected ranges, fixed version, references
-- Health check + config editor (feed URLs, optional NVD / GitHub API keys)
-- Ships a provisioned demo dashboard
+### Phase 1 — CVE query data source ✅
+- ✅ Backend Go data source querying **OSV** (free, no auth)
+- ✅ Query editor: pick ecosystem (npm, Go, PyPI, Maven, …) + package (+ optional version), or a CVE / GHSA id
+- ✅ Returns a table of vulnerabilities: id, cve, severity, cvss, summary, fixed version, references
+- ✅ Health check + config editor (OSV URL, optional NVD / GitHub API keys)
 
 ### Phase 2 — App, asset inventory & matching
-- App plugin with Overview / Assets / Search pages
-- Ingest scan output (Trivy, Grype) and SBOMs (SPDX, CycloneDX); correlate assets against feeds
-- Add NVD and GitHub Advisory as enrichment feeds
+- ✅ **Search** page — query OSV live by package or CVE id, with severity summary + click-to-filter
+- ✅ **Scan** page — upload a **Trivy / Grype** JSON, extract its package inventory, and match every package
+  against live OSV (results reflect vulnerabilities known *now*, not the scan's snapshot)
+- ⏳ SBOM ingestion (SPDX, CycloneDX) and OS-package ecosystems
+- ⏳ NVD and GitHub Advisory as enrichment feeds; provisioned demo dashboard
 
 ### Phase 3 — Alerting & intelligence
 - Native Grafana alert rules on new critical CVEs affecting your assets
