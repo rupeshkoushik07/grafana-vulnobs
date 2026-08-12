@@ -95,6 +95,7 @@ func (a *App) handleScan(w http.ResponseWriter, req *http.Request) {
 	}
 
 	rows := a.scanPackages(req.Context(), queried)
+	a.enrichRows(req.Context(), rows)
 
 	// Count distinct vulnerable packages.
 	vulnPkgs := map[string]bool{}
@@ -114,8 +115,94 @@ func (a *App) handleScan(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+// handleIngest accepts a scan/SBOM pushed by an external scanner (a CronJob or CI
+// step), matches it against live OSV, and stores it as the latest posture for the
+// named asset. This is what turns manual uploads into continuous monitoring.
+//
+//	POST /resources/ingest?asset=<name>
+func (a *App) handleIngest(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "use POST with a scan/SBOM body")
+		return
+	}
+	asset := strings.TrimSpace(req.URL.Query().Get("asset"))
+	if asset == "" {
+		writeError(w, http.StatusBadRequest, "missing required 'asset' query parameter")
+		return
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(req.Body, maxScanBytes))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not read request body")
+		return
+	}
+
+	format, _, pkgs, _, err := parseScan(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(pkgs) > maxPackages {
+		pkgs = pkgs[:maxPackages]
+	}
+
+	rows := a.scanPackages(req.Context(), pkgs)
+	a.enrichRows(req.Context(), rows)
+	posture := a.store.put(asset, format, rows)
+
+	writeJSON(w, map[string]any{
+		"asset":       posture.Asset,
+		"format":      posture.Format,
+		"total":       posture.Total,
+		"counts":      posture.Counts,
+		"lastScanned": posture.LastScanned,
+	})
+}
+
+// handleAssets returns the current posture of every ingested asset (summary only).
+func (a *App) handleAssets(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, map[string]any{"assets": a.store.list()})
+}
+
+// handleAsset returns the full posture (including per-vulnerability rows) for one
+// asset: GET /resources/asset?name=<name>
+func (a *App) handleAsset(w http.ResponseWriter, req *http.Request) {
+	name := strings.TrimSpace(req.URL.Query().Get("name"))
+	p, ok := a.store.get(name)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no posture stored for that asset")
+		return
+	}
+	writeJSON(w, p)
+}
+
+// handleEnrich adds exploit context (EPSS + CISA KEV + a priority) to a list of
+// CVE ids. This is the engine other surfaces (and the panel plugin) call to turn
+// a flat CVE list into a ranked "fix these first" order.
+//
+//	POST /resources/enrich   body: {"cves": ["CVE-2021-44228", ...]}
+func (a *App) handleEnrich(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "use POST with {\"cves\": [...]}")
+		return
+	}
+	var body struct {
+		CVEs []string `json:"cves"`
+	}
+	if err := json.NewDecoder(io.LimitReader(req.Body, 1<<20)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	intel := a.enrichCVEs(req.Context(), body.CVEs)
+	writeJSON(w, map[string]any{"intel": intel})
+}
+
 // registerRoutes maps HTTP handlers onto the app's resource mux.
 func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/search", a.handleSearch)
 	mux.HandleFunc("/scan", a.handleScan)
+	mux.HandleFunc("/ingest", a.handleIngest)
+	mux.HandleFunc("/assets", a.handleAssets)
+	mux.HandleFunc("/asset", a.handleAsset)
+	mux.HandleFunc("/enrich", a.handleEnrich)
 }

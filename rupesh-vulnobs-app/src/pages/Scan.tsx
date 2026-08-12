@@ -6,6 +6,7 @@ import { PluginPage, getBackendSrv } from '@grafana/runtime';
 import {
   Alert,
   Badge,
+  BadgeColor,
   FileDropzone,
   InteractiveTable,
   LoadingPlaceholder,
@@ -29,7 +30,18 @@ interface ScanRow {
   fixedVersion: string;
   summary: string;
   url: string;
+  epss: number;
+  kev: boolean;
+  priority: number;
+  action: string;
 }
+
+const ACTION_COLOR: Record<string, BadgeColor> = {
+  now: 'red',
+  urgent: 'orange',
+  soon: 'purple',
+  backlog: 'darkgrey',
+};
 
 interface ScanResult {
   format: string;
@@ -81,7 +93,19 @@ function ScanPage() {
     return SEVERITY_ORDER.filter((sev) => c[sev]).map((sev) => ({ severity: sev, count: c[sev] }));
   }, [result]);
 
+  const kevCount = useMemo(() => (result?.rows ?? []).filter((r) => r.kev).length, [result]);
+
   const columns: Array<Column<ScanRow>> = [
+    {
+      id: 'priority',
+      header: 'Priority',
+      cell: ({ row: { original: r } }) => (
+        <span className={s.priorityCell}>
+          {r.kev && <span title="Actively exploited (CISA KEV)">🔥</span>}
+          <Badge text={r.action} color={ACTION_COLOR[r.action] ?? 'darkgrey'} />
+        </span>
+      ),
+    },
     {
       id: 'severity',
       header: 'Severity',
@@ -90,15 +114,19 @@ function ScanPage() {
     { id: 'package', header: 'Package' },
     { id: 'version', header: 'Version' },
     {
-      id: 'id',
-      header: 'Advisory',
+      id: 'cve',
+      header: 'CVE / Advisory',
       cell: ({ row: { original: r } }) => (
         <a className={s.link} href={r.url} target="_blank" rel="noreferrer">
-          {r.id}
+          {r.cve || r.id}
         </a>
       ),
     },
-    { id: 'cve', header: 'CVE' },
+    {
+      id: 'epss',
+      header: 'EPSS',
+      cell: ({ row: { original: r } }) => <span>{r.cve ? `${(r.epss * 100).toFixed(1)}%` : '—'}</span>,
+    },
     { id: 'fixedVersion', header: 'Fixed in' },
   ];
 
@@ -140,6 +168,7 @@ function ScanPage() {
                   <Stat label="Packages scanned" value={result.packagesScanned} />
                   <Stat label="Vulnerable packages" value={result.vulnerablePackages} />
                   <Stat label="Vulnerabilities" value={result.rows.length} />
+                  <Stat label="🔥 Actively exploited" value={kevCount} />
                   {result.skippedOsPackages > 0 && (
                     <Stat label="OS packages skipped" value={result.skippedOsPackages} muted />
                   )}
@@ -150,6 +179,13 @@ function ScanPage() {
                   </Alert>
                 )}
               </div>
+
+              {kevCount > 0 && (
+                <Alert title={`${kevCount} vulnerabilit${kevCount === 1 ? 'y is' : 'ies are'} being actively exploited`} severity="error">
+                  These carry a 🔥 and are ranked first — patch them now. The rest are ordered by exploit
+                  probability (EPSS), so severity alone no longer sets the order.
+                </Alert>
+              )}
 
               {counts.length > 0 && (
                 <div className={s.summary}>
@@ -258,5 +294,10 @@ const getStyles = (theme: GrafanaTheme2) => ({
   `,
   link: css`
     color: ${theme.colors.text.link};
+  `,
+  priorityCell: css`
+    display: inline-flex;
+    align-items: center;
+    gap: ${theme.spacing(0.5)};
   `,
 });

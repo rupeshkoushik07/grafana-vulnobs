@@ -36,6 +36,12 @@ type ScanRow struct {
 	FixedVersion  string `json:"fixedVersion"`
 	Summary       string `json:"summary"`
 	URL           string `json:"url"`
+
+	// Exploit-context enrichment (EPSS + CISA KEV), filled by enrichRows.
+	EPSS     float64 `json:"epss"`
+	KEV      bool    `json:"kev"`
+	Priority int     `json:"priority"`
+	Action   string  `json:"action"`
 }
 
 // mapEcosystem maps a scanner's package type/ecosystem string to an OSV
@@ -414,4 +420,29 @@ func (a *App) scanPackages(ctx context.Context, pkgs []pkgRef) []ScanRow {
 		return rows[i].Package < rows[j].Package
 	})
 	return rows
+}
+
+// enrichRows adds EPSS + KEV exploit intel to each row, sets a priority, and
+// re-sorts the rows so the ones that actually matter float to the top.
+func (a *App) enrichRows(ctx context.Context, rows []ScanRow) {
+	cves := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if r.CVE != "" {
+			cves = append(cves, r.CVE)
+		}
+	}
+	intel := a.enrichCVEs(ctx, cves)
+	for i := range rows {
+		it := intel[rows[i].CVE]
+		rows[i].EPSS = it.EPSS
+		rows[i].KEV = it.KEV
+		rows[i].Priority = priorityScore(rows[i].SeverityScore, it.EPSS, it.KEV)
+		rows[i].Action = actionLabel(it.EPSS, it.KEV)
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Priority != rows[j].Priority {
+			return rows[i].Priority > rows[j].Priority
+		}
+		return rows[i].Package < rows[j].Package
+	})
 }

@@ -28,13 +28,17 @@ type App struct {
 	backend.CallResourceHandler
 	baseURL    string
 	httpClient *http.Client
+	store      *assetStore
+	kev        *kevCache
 }
 
 // NewApp creates a new *App instance.
 func NewApp(_ context.Context, settings backend.AppInstanceSettings) (instancemgmt.Instance, error) {
 	app := App{
 		baseURL:    DefaultOsvBaseURL,
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+		store:      newAssetStore(),
+		kev:        newKevCache(),
 	}
 
 	// Optional override of the OSV base URL via the app's jsonData.
