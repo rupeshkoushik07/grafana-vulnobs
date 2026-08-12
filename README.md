@@ -130,6 +130,19 @@ docker compose up              # start Grafana at http://localhost:3000
 Each plugin is a standard [`@grafana/create-plugin`](https://grafana.com/developers/plugin-tools)
 project — see its own `README.md` for details.
 
+## Deploy to Kubernetes (Tanka)
+
+A [Grafana Tanka](https://tanka.dev) environment in [`deploy/tanka/`](./deploy/tanka) deploys
+the whole stack to a cluster — Grafana with the plugins, plus a Trivy CronJob that
+continuously scans an image and pushes results to the app's `/ingest` endpoint.
+
+```bash
+cd deploy/tanka
+tk show environments/default                                  # render the manifests
+tk env set environments/default --server=https://<api>:6443   # target your cluster
+tk apply environments/default                                 # diff, then apply
+```
+
 ## Contributing
 
 Contributions welcome once Phase 1 lands. Adding a new feed source is designed to be a
