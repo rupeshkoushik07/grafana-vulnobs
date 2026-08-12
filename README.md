@@ -26,14 +26,15 @@ Two plugins in one repo, built to grow in phases:
 | Plugin | Directory | Role |
 | --- | --- | --- |
 | **Data source** (Go backend) | [`rupesh-vulnobs-datasource/`](./rupesh-vulnobs-datasource) | Queries public CVE feeds. Works in Explore, dashboards, and — because it has a backend — **Grafana alert rules**. This is the Phase 1 focus. |
-| **App** | [`rupesh-vulnobs-app/`](./rupesh-vulnobs-app) | Custom pages (**Search**, **Scan**) for searching CVEs and viewing the posture of a scanned image. Its Go backend calls OSV directly via resource endpoints. |
+| **App** | [`rupesh-vulnobs-app/`](./rupesh-vulnobs-app) | Custom pages (**Search**, **Scan**). Its Go backend matches packages against OSV **and enriches every CVE with EPSS + CISA KEV** to rank findings by real risk. Accepts pushed scans on `/ingest`. |
 
 Only a backend **data source** can be used in Grafana Alerting, which is why the alertable
-primitive lives there; the app is layered alongside for interactive browsing.
+primitive lives there; the app is layered alongside for interactive browsing and prioritization.
 
 ```mermaid
 flowchart TB
     user(["User&nbsp;/&nbsp;Browser"])
+    scanner["Trivy CronJob<br/>(deployed via Tanka)"]
 
     subgraph grafana["Grafana"]
         direction TB
@@ -43,7 +44,7 @@ flowchart TB
         subgraph app["App plugin — rupesh-vulnobs-app"]
             direction TB
             appfe["Frontend pages<br/>Search · Scan"]
-            appbe["Go backend<br/>/resources/search<br/>/resources/scan"]
+            appbe["Go backend<br/>/search /scan /ingest /enrich<br/>match → enrich → prioritize"]
             appfe -->|"getBackendSrv()"| appbe
         end
 
@@ -55,29 +56,40 @@ flowchart TB
         end
     end
 
-    osv[("OSV API<br/>api.osv.dev")]
+    osv[("OSV<br/>vulnerabilities")]
+    epss[("EPSS<br/>exploit probability")]
+    kev[("CISA KEV<br/>actively exploited")]
 
     user --> appfe
     user --> dashes
+    scanner -->|"POST /ingest (scan JSON)"| appbe
     dashes -->|"/api/ds/query"| dsbe
     alerting -->|"rule evaluation"| dsbe
-    appbe -->|"HTTPS: /v1/query · /v1/querybatch"| osv
-    dsbe -->|"HTTPS: /v1/query"| osv
+    appbe -->|"HTTPS"| osv
+    appbe -->|"HTTPS"| epss
+    appbe -->|"HTTPS"| kev
+    dsbe -->|"HTTPS"| osv
 ```
 
 ### Data flow
 
 - **Search / Scan (app):** the React page calls the app's own Go backend over
-  `getBackendSrv()` → `/api/plugins/rupesh-vulnobs-app/resources/{search,scan}`. The backend
-  queries OSV live, parses the response, and returns rows. **Scan** additionally parses a
-  Trivy/Grype report, extracts the package inventory, and matches every package against OSV —
-  so results reflect vulnerabilities known *now*, not the scan's snapshot.
+  `getBackendSrv()` → `/resources/{search,scan}`. The backend queries OSV live and, for Scan,
+  parses a **Trivy / Grype / CycloneDX / SPDX** report, extracts the package inventory, and
+  matches every package against OSV — so results reflect vulnerabilities known *now*, not the
+  scan's snapshot.
+- **Enrichment & prioritization (app):** every CVE is enriched with **EPSS** (exploit
+  probability) and **CISA KEV** (actively exploited) and given a priority score
+  (`KEV > EPSS > severity`), so a CRITICAL-but-unexploited CVE can rank *below* a
+  MODERATE-but-exploited one. `/enrich` exposes this engine on its own.
+- **Continuous ingest:** an external scanner (a Trivy CronJob, deployed via
+  [Tanka](./deploy/tanka)) pushes reports to `/ingest`, which stores the latest prioritized
+  posture per asset — turning manual uploads into continuous monitoring.
 - **Dashboards / Alerting (data source):** panels and alert rules issue queries to the data
   source backend (`QueryData`), which calls OSV and returns Grafana **data frames**. Only this
   backend path can feed native alert rules.
-- **No secrets required:** OSV needs no authentication. The optional API-key field is reserved
-  for NVD / GitHub Advisory enrichment in a later phase and is stored in `secureJsonData`
-  (backend-only, never sent to the browser).
+- **No secrets required:** OSV, EPSS, and KEV are all free public feeds needing no
+  authentication.
 
 ## Roadmap
 
