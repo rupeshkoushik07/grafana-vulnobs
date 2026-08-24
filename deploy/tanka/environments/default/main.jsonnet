@@ -5,7 +5,7 @@ vulnobs.new({
 
   // Where the plugin release zips are downloaded from.
   repo: 'rupeshkoushik07/grafana-vulnobs',
-  pluginVersion: 'v0.1.0',
+  pluginVersion: 'v0.2.0',
 
   grafanaImage: 'grafana/grafana:11.2.0',
   adminPassword: 'admin',

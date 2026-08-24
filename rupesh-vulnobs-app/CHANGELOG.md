@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0
+
+### Features
+
+- **Risk-based prioritization** — every CVE is enriched with **EPSS** (exploit probability)
+  and **CISA KEV** (actively exploited) and given a priority score (`KEV > EPSS > severity`),
+  so findings are ranked by real risk rather than severity alone.
+- Scan results now show a Priority column (🔥 actively exploited, now/urgent/soon/backlog),
+  EPSS %, and an "actively exploited" callout.
+- **SBOM support** — Scan accepts CycloneDX and SPDX in addition to Trivy and Grype.
+- **Continuous ingest** — `POST /resources/ingest?asset=<name>` stores the latest prioritized
+  posture per asset (for scanners pushing on a schedule).
+- `/resources/enrich` exposes the EPSS + KEV engine on its own.
+
 ## 0.1.0
 
 First release.
