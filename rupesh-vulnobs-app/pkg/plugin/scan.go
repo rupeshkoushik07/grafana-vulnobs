@@ -390,20 +390,20 @@ func (a *App) scanPackages(ctx context.Context, pkgs []pkgRef) []ScanRow {
 			if err != nil || len(vulns) == 0 {
 				return
 			}
-			local := make([]ScanRow, 0, len(vulns))
-			for _, v := range vulns {
-				label := severityLabel(v)
+			advisories := normalizeVulns(vulns, p.Name, p.Version)
+			local := make([]ScanRow, 0, len(advisories))
+			for _, a := range advisories {
 				local = append(local, ScanRow{
 					Package:       p.Name,
 					Ecosystem:     p.Ecosystem,
 					Version:       p.Version,
-					ID:            v.ID,
-					CVE:           cveOf(v),
-					Severity:      label,
-					SeverityScore: severityScore(label),
-					FixedVersion:  fixedVersion(v),
-					Summary:       summaryOf(v),
-					URL:           primaryURL(v),
+					ID:            a.ID,
+					CVE:           a.CVE,
+					Severity:      a.Severity,
+					SeverityScore: severityScore(a.Severity),
+					FixedVersion:  a.Fixed,
+					Summary:       a.Summary,
+					URL:           a.URL,
 				})
 			}
 			mu.Lock()

@@ -1,0 +1,491 @@
+{
+  "vulns": [
+    {
+      "id": "GHSA-9hjg-9r4m-mvj7",
+      "aliases": [
+        "CVE-2024-47081",
+        "PYSEC-2026-1872"
+      ],
+      "summary": "Requests vulnerable to .netrc credentials leak via malicious URLs",
+      "published": "2025-06-09T19:06:08Z",
+      "modified": "2026-09-10T03:50:25.139398550Z",
+      "severity": [
+        {
+          "type": "CVSS_V3",
+          "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:N/A:N"
+        }
+      ],
+      "database_specific": {
+        "severity": "MODERATE"
+      },
+      "affected": [
+        {
+          "package": {
+            "name": "requests",
+            "ecosystem": "PyPI",
+            "purl": "pkg:pypi/requests"
+          },
+          "ranges": [
+            {
+              "type": "ECOSYSTEM",
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "2.32.4"
+                }
+              ]
+            }
+          ],
+          "database_specific": {},
+          "ecosystem_specific": {}
+        }
+      ],
+      "references": [
+        {
+          "type": "WEB",
+          "url": "https://github.com/psf/requests/security/advisories/GHSA-9hjg-9r4m-mvj7"
+        }
+      ]
+    },
+    {
+      "id": "GHSA-9wx4-h78v-vm56",
+      "aliases": [
+        "CVE-2024-35195",
+        "PYSEC-2026-1873"
+      ],
+      "summary": "Requests `Session` object does not verify requests after making first request with verify=False",
+      "published": "2024-05-20T20:15:00Z",
+      "modified": "2026-09-10T03:50:13.740879755Z",
+      "severity": [
+        {
+          "type": "CVSS_V3",
+          "score": "CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:H/I:H/A:N"
+        }
+      ],
+      "database_specific": {
+        "severity": "MODERATE"
+      },
+      "affected": [
+        {
+          "package": {
+            "name": "requests",
+            "ecosystem": "PyPI",
+            "purl": "pkg:pypi/requests"
+          },
+          "ranges": [
+            {
+              "type": "ECOSYSTEM",
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "2.32.0"
+                }
+              ]
+            }
+          ],
+          "database_specific": {},
+          "ecosystem_specific": {}
+        }
+      ],
+      "references": [
+        {
+          "type": "WEB",
+          "url": "https://github.com/psf/requests/security/advisories/GHSA-9wx4-h78v-vm56"
+        }
+      ]
+    },
+    {
+      "id": "GHSA-gc5v-m9x4-r6x2",
+      "aliases": [
+        "CVE-2026-25645",
+        "PYSEC-2026-2275"
+      ],
+      "summary": "Requests has Insecure Temp File Reuse in its extract_zipped_paths() utility function",
+      "published": "2026-03-25T16:56:28Z",
+      "modified": "2026-09-10T03:50:39.207922076Z",
+      "severity": [
+        {
+          "type": "CVSS_V3",
+          "score": "CVSS:3.1/AV:L/AC:H/PR:L/UI:R/S:U/C:N/I:H/A:N"
+        }
+      ],
+      "database_specific": {
+        "severity": "MODERATE"
+      },
+      "affected": [
+        {
+          "package": {
+            "name": "requests",
+            "ecosystem": "PyPI",
+            "purl": "pkg:pypi/requests"
+          },
+          "ranges": [
+            {
+              "type": "ECOSYSTEM",
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "2.33.0"
+                }
+              ]
+            }
+          ],
+          "database_specific": {},
+          "ecosystem_specific": {}
+        }
+      ],
+      "references": [
+        {
+          "type": "WEB",
+          "url": "https://github.com/psf/requests/security/advisories/GHSA-gc5v-m9x4-r6x2"
+        }
+      ]
+    },
+    {
+      "id": "GHSA-j8r2-6x86-q33q",
+      "aliases": [
+        "CVE-2023-32681",
+        "PYSEC-2023-74"
+      ],
+      "summary": "Unintended leak of Proxy-Authorization header in requests",
+      "published": "2023-05-22T20:36:32Z",
+      "modified": "2026-09-10T03:50:01.756149727Z",
+      "severity": [
+        {
+          "type": "CVSS_V3",
+          "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:N/A:N"
+        }
+      ],
+      "database_specific": {
+        "severity": "MODERATE"
+      },
+      "affected": [
+        {
+          "package": {
+            "name": "requests",
+            "ecosystem": "PyPI",
+            "purl": "pkg:pypi/requests"
+          },
+          "ranges": [
+            {
+              "type": "ECOSYSTEM",
+              "events": [
+                {
+                  "introduced": "2.3.0"
+                },
+                {
+                  "fixed": "2.31.0"
+                }
+              ]
+            }
+          ],
+          "database_specific": {},
+          "ecosystem_specific": {}
+        }
+      ],
+      "references": [
+        {
+          "type": "WEB",
+          "url": "https://github.com/psf/requests/security/advisories/GHSA-j8r2-6x86-q33q"
+        }
+      ]
+    },
+    {
+      "id": "GHSA-x84v-xcm2-53pg",
+      "aliases": [
+        "CVE-2018-18074",
+        "PYSEC-2018-28"
+      ],
+      "summary": "Insufficiently Protected Credentials in Requests",
+      "published": "2018-10-29T19:06:46Z",
+      "modified": "2024-10-21T21:42:55.896669Z",
+      "severity": [
+        {
+          "type": "CVSS_V3",
+          "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+        }
+      ],
+      "database_specific": {
+        "severity": "HIGH"
+      },
+      "affected": [
+        {
+          "package": {
+            "name": "requests",
+            "ecosystem": "PyPI",
+            "purl": "pkg:pypi/requests"
+          },
+          "ranges": [
+            {
+              "type": "ECOSYSTEM",
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "2.20.0"
+                }
+              ]
+            }
+          ],
+          "database_specific": {},
+          "ecosystem_specific": {}
+        }
+      ],
+      "references": [
+        {
+          "type": "ADVISORY",
+          "url": "https://nvd.nist.gov/vuln/detail/CVE-2018-18074"
+        }
+      ]
+    },
+    {
+      "id": "PYSEC-2018-28",
+      "aliases": [
+        "CVE-2018-18074",
+        "GHSA-x84v-xcm2-53pg"
+      ],
+      "published": "2018-10-09T17:29:00Z",
+      "modified": "2023-11-08T04:00:04.815794Z",
+      "database_specific": {},
+      "affected": [
+        {
+          "package": {
+            "name": "requests",
+            "ecosystem": "PyPI",
+            "purl": "pkg:pypi/requests"
+          },
+          "ranges": [
+            {
+              "type": "GIT",
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "c45d7c49ea75133e52ab22a8e9e13173938e36ff"
+                }
+              ]
+            },
+            {
+              "type": "ECOSYSTEM",
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "2.20.0"
+                }
+              ]
+            }
+          ],
+          "database_specific": {},
+          "ecosystem_specific": {}
+        }
+      ],
+      "references": [
+        {
+          "type": "WEB",
+          "url": "https://github.com/requests/requests/pull/4718"
+        }
+      ]
+    },
+    {
+      "id": "PYSEC-2023-74",
+      "aliases": [
+        "CVE-2023-32681",
+        "GHSA-j8r2-6x86-q33q"
+      ],
+      "published": "2023-05-26T18:15:00Z",
+      "modified": "2023-11-08T04:12:35.436175Z",
+      "database_specific": {},
+      "affected": [
+        {
+          "package": {
+            "name": "requests",
+            "ecosystem": "PyPI",
+            "purl": "pkg:pypi/requests"
+          },
+          "ranges": [
+            {
+              "type": "GIT",
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "74ea7cf7a6a27a4eeb2ae24e162bcc942a6706d5"
+                }
+              ]
+            },
+            {
+              "type": "ECOSYSTEM",
+              "events": [
+                {
+                  "introduced": "2.3.0"
+                },
+                {
+                  "fixed": "2.31.0"
+                }
+              ]
+            }
+          ],
+          "database_specific": {},
+          "ecosystem_specific": {}
+        }
+      ],
+      "references": [
+        {
+          "type": "ADVISORY",
+          "url": "https://github.com/psf/requests/security/advisories/GHSA-j8r2-6x86-q33q"
+        }
+      ]
+    },
+    {
+      "id": "PYSEC-2026-1872",
+      "aliases": [
+        "CVE-2024-47081",
+        "GHSA-9hjg-9r4m-mvj7"
+      ],
+      "summary": "Requests vulnerable to .netrc credentials leak via malicious URLs",
+      "published": "2026-07-07T16:02:54.151964Z",
+      "modified": "2026-07-07T17:47:00.332079836Z",
+      "severity": [
+        {
+          "type": "CVSS_V3",
+          "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:H/I:N/A:N"
+        }
+      ],
+      "database_specific": {},
+      "affected": [
+        {
+          "package": {
+            "name": "requests",
+            "ecosystem": "PyPI",
+            "purl": "pkg:pypi/requests"
+          },
+          "ranges": [
+            {
+              "type": "ECOSYSTEM",
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "2.32.4"
+                }
+              ]
+            }
+          ],
+          "database_specific": {},
+          "ecosystem_specific": {}
+        }
+      ],
+      "references": [
+        {
+          "type": "WEB",
+          "url": "https://github.com/psf/requests/security/advisories/GHSA-9hjg-9r4m-mvj7"
+        }
+      ]
+    },
+    {
+      "id": "PYSEC-2026-1873",
+      "aliases": [
+        "CVE-2024-35195",
+        "GHSA-9wx4-h78v-vm56"
+      ],
+      "summary": "Requests `Session` object does not verify requests after making first request with verify=False",
+      "published": "2026-07-07T11:45:42.890131Z",
+      "modified": "2026-07-07T17:46:36.762141019Z",
+      "severity": [
+        {
+          "type": "CVSS_V3",
+          "score": "CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:H/I:H/A:N"
+        }
+      ],
+      "database_specific": {},
+      "affected": [
+        {
+          "package": {
+            "name": "requests",
+            "ecosystem": "PyPI",
+            "purl": "pkg:pypi/requests"
+          },
+          "ranges": [
+            {
+              "type": "ECOSYSTEM",
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "2.32.0"
+                }
+              ]
+            }
+          ],
+          "database_specific": {},
+          "ecosystem_specific": {}
+        }
+      ],
+      "references": [
+        {
+          "type": "WEB",
+          "url": "https://github.com/psf/requests/security/advisories/GHSA-9wx4-h78v-vm56"
+        }
+      ]
+    },
+    {
+      "id": "PYSEC-2026-2275",
+      "aliases": [
+        "CVE-2026-25645",
+        "GHSA-gc5v-m9x4-r6x2"
+      ],
+      "published": "2026-03-25T17:16:52.970Z",
+      "modified": "2026-07-13T07:15:43.964902190Z",
+      "severity": [
+        {
+          "type": "CVSS_V3",
+          "score": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:N"
+        }
+      ],
+      "database_specific": {},
+      "affected": [
+        {
+          "package": {
+            "name": "requests",
+            "ecosystem": "PyPI",
+            "purl": "pkg:pypi/requests"
+          },
+          "ranges": [
+            {
+              "type": "ECOSYSTEM",
+              "events": [
+                {
+                  "introduced": "0"
+                },
+                {
+                  "fixed": "2.33.0"
+                }
+              ]
+            }
+          ],
+          "database_specific": {},
+          "ecosystem_specific": {}
+        }
+      ],
+      "references": [
+        {
+          "type": "ADVISORY",
+          "url": "https://github.com/psf/requests/releases/tag/v2.33.0"
+        }
+      ]
+    }
+  ]
+}

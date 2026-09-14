@@ -22,6 +22,7 @@ type osvVuln struct {
 	Aliases   []string        `json:"aliases"`
 	Published string          `json:"published"`
 	Modified  string          `json:"modified"`
+	Withdrawn string          `json:"withdrawn"`
 	Severity  []osvSeverity   `json:"severity"`
 	Affected  []osvAffected   `json:"affected"`
 	Refs      []osvReference  `json:"references"`
@@ -34,9 +35,15 @@ type osvSeverity struct {
 }
 
 type osvAffected struct {
+	Package osvPackage      `json:"package"`
 	Ranges  []osvRange      `json:"ranges"`
 	DBSpec  json.RawMessage `json:"database_specific"`
 	EcoSpec json.RawMessage `json:"ecosystem_specific"`
+}
+
+type osvPackage struct {
+	Name      string `json:"name"`
+	Ecosystem string `json:"ecosystem"`
 }
 
 type osvRange struct {
@@ -140,22 +147,23 @@ func (a *App) osvPost(ctx context.Context, path string, body any) ([]byte, error
 	return raw, nil
 }
 
-// toRows flattens OSV vulnerabilities into VulnRows for the frontend.
-func toRows(vulns []osvVuln) []VulnRow {
-	rows := make([]VulnRow, 0, len(vulns))
-	for _, v := range vulns {
-		label := severityLabel(v)
+// toRows turns OSV vulnerabilities into VulnRows for the frontend, one row per
+// CVE. pkg and version are what was queried, or empty for a lookup by id.
+func toRows(vulns []osvVuln, pkg, version string) []VulnRow {
+	advisories := normalizeVulns(vulns, pkg, version)
+	rows := make([]VulnRow, 0, len(advisories))
+	for _, a := range advisories {
 		rows = append(rows, VulnRow{
-			ID:            v.ID,
-			CVE:           cveOf(v),
-			Severity:      label,
-			SeverityScore: severityScore(label),
-			CVSS:          firstCVSS(v),
-			Summary:       summaryOf(v),
-			FixedVersion:  fixedVersion(v),
-			Published:     v.Published,
-			Modified:      v.Modified,
-			URL:           primaryURL(v),
+			ID:            a.ID,
+			CVE:           a.CVE,
+			Severity:      a.Severity,
+			SeverityScore: severityScore(a.Severity),
+			CVSS:          a.CVSS,
+			Summary:       a.Summary,
+			FixedVersion:  a.Fixed,
+			Published:     a.Published,
+			Modified:      a.Modified,
+			URL:           a.URL,
 		})
 	}
 	return rows
@@ -173,21 +181,6 @@ func cveOf(v osvVuln) string {
 		}
 	}
 	return ""
-}
-
-func severityLabel(v osvVuln) string {
-	if s := severityFromRaw(v.DBSpec); s != "" {
-		return s
-	}
-	for _, a := range v.Affected {
-		if s := severityFromRaw(a.DBSpec); s != "" {
-			return s
-		}
-		if s := severityFromRaw(a.EcoSpec); s != "" {
-			return s
-		}
-	}
-	return "UNKNOWN"
 }
 
 func severityFromRaw(raw json.RawMessage) string {
@@ -219,18 +212,7 @@ func normalizeSeverity(s string) string {
 }
 
 func severityScore(label string) int {
-	switch label {
-	case "CRITICAL":
-		return 4
-	case "HIGH":
-		return 3
-	case "MODERATE":
-		return 2
-	case "LOW":
-		return 1
-	default:
-		return 0
-	}
+	return severityRank(label)
 }
 
 func summaryOf(v osvVuln) string {
@@ -242,19 +224,6 @@ func summaryOf(v osvVuln) string {
 			return v.Details[:i]
 		}
 		return v.Details
-	}
-	return ""
-}
-
-func fixedVersion(v osvVuln) string {
-	for _, a := range v.Affected {
-		for _, r := range a.Ranges {
-			for _, e := range r.Events {
-				if e.Fixed != "" {
-					return e.Fixed
-				}
-			}
-		}
 	}
 	return ""
 }
