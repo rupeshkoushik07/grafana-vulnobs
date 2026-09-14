@@ -45,15 +45,22 @@ COPY rupesh-vulnobs-app/ rupesh-vulnobs-app/
 COPY rupesh-vulnobs-datasource/ rupesh-vulnobs-datasource/
 WORKDIR /src/rupesh-vulnobs-app
 RUN mage -v "$(cat /mage-target)"
+# The scan CronJob's helper that lists the images running in the cluster.
+RUN GOOS=linux GOARCH="$TARGETARCH" go build -trimpath -ldflags="-s -w" -o /out/vulnobs-discover ./cmd/vulnobs-discover
 WORKDIR /src/rupesh-vulnobs-datasource
 RUN mage -v "$(cat /mage-target)"
 
-# --- The plugin files exactly as they ship (exported and scanned in CI) ---
+# --- The plugin files exactly as they ship ---
 FROM scratch AS plugins
 COPY --from=frontend /src/rupesh-vulnobs-app/dist/ /rupesh-vulnobs-app/
 COPY --from=backend /src/rupesh-vulnobs-app/dist/ /rupesh-vulnobs-app/
 COPY --from=frontend /src/rupesh-vulnobs-datasource/dist/ /rupesh-vulnobs-datasource/
 COPY --from=backend /src/rupesh-vulnobs-datasource/dist/ /rupesh-vulnobs-datasource/
+
+# --- Everything this repo adds to the image (exported and scanned in CI) ---
+FROM scratch AS artifacts
+COPY --from=plugins / /plugins/
+COPY --from=backend /out/vulnobs-discover /bin/vulnobs-discover
 
 # --- Runtime ---
 FROM grafana/grafana:13.2.1@sha256:f772d434e8fab0049deb2b1b30abd43342bcfca1537614aa8d36080232cf4283
@@ -64,8 +71,11 @@ ENV GF_PATHS_PLUGINS=/usr/share/grafana/plugins-vulnobs \
     GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=rupesh-vulnobs-app,rupesh-vulnobs-datasource \
     GF_PLUGINS_PREINSTALL_DISABLED=true
 COPY --from=plugins / /usr/share/grafana/plugins-vulnobs/
-# Provision the OSV data source, the demo dashboard and the app itself, so a
-# plain `docker run` gives a working stack.
-COPY rupesh-vulnobs-datasource/provisioning/datasources/datasources.yml /etc/grafana/provisioning/datasources/vulnobs.yml
+COPY --from=backend /out/vulnobs-discover /usr/local/bin/vulnobs-discover
+# Provision the data source, the demo dashboard, the app (saving ingested scans
+# under /var/lib/grafana/vulnobs) and an alert rule for actively exploited
+# vulnerabilities, so a plain `docker run` gives a working stack.
+COPY image/provisioning/datasources/vulnobs.yaml /etc/grafana/provisioning/datasources/vulnobs.yaml
 COPY rupesh-vulnobs-datasource/provisioning/dashboards/ /etc/grafana/provisioning/dashboards/
 COPY image/provisioning/plugins/apps.yaml /etc/grafana/provisioning/plugins/vulnobs.yaml
+COPY image/provisioning/alerting/vulnobs.yaml /etc/grafana/provisioning/alerting/vulnobs.yaml

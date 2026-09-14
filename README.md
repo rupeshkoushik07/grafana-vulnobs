@@ -3,9 +3,10 @@
 [![CI](https://github.com/rupeshkoushik07/grafana-vulnobs/actions/workflows/ci.yml/badge.svg)](https://github.com/rupeshkoushik07/grafana-vulnobs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-Bring vulnerability observability into Grafana. Query public CVE feeds, browse the
-vulnerabilities affecting your scanned containers and repositories, and alert natively
-when new critical CVEs hit your stack — all alongside your existing metrics, logs, and traces.
+Bring vulnerability observability into Grafana. Query public CVE feeds, see the
+vulnerabilities in every image running in your cluster ranked by exploit risk, and alert
+natively when an actively exploited vulnerability shows up — all alongside your existing
+metrics, logs, and traces.
 
 > **Status:** early development · public data only. This project reads
 > exclusively from public vulnerability feeds ([OSV](https://osv.dev),
@@ -14,12 +15,12 @@ when new critical CVEs hit your stack — all alongside your existing metrics, l
 
 ## Quick start
 
-Run Grafana with both plugins, the OSV data source and a demo dashboard already set up. The
-image is built for `linux/amd64` and `linux/arm64`, so it runs natively on Intel and Apple
-Silicon machines.
+Run Grafana with both plugins, the OSV data source, a demo dashboard and an alert rule
+already set up. The image is built for `linux/amd64` and `linux/arm64`, so it runs natively
+on Intel and Apple Silicon machines.
 
 ```bash
-docker run --rm -p 3000:3000 ghcr.io/rupeshkoushik07/grafana-vulnobs:main
+docker run --rm -p 3000:3000 -v vulnobs-data:/var/lib/grafana ghcr.io/rupeshkoushik07/grafana-vulnobs:main
 ```
 
 Once the logs settle (10–20 seconds):
@@ -30,16 +31,27 @@ Once the logs settle (10–20 seconds):
    [`examples/`](./examples), such as `cyclonedx-payments-api.json`. Every package is matched
    against live OSV and ranked by exploit risk.
 3. Use **Search** to look up a package or a CVE / GHSA id.
-4. Open **Dashboards → Vulnobs → Vulnobs — OSV demo** to see the data source in dashboard
+4. Push a report the way a scanner would, then open **More apps → Vulnobs → Assets**:
+
+   ```bash
+   curl -u admin:admin -X POST "http://localhost:3000/api/plugins/rupesh-vulnobs-app/resources/ingest?asset=payments-api" \
+     -H "Content-Type: application/json" --data-binary @examples/cyclonedx-payments-api.json
+   ```
+
+   Within a minute, **Alerting → Alert rules → Vulnobs** fires for it: it has two actively
+   exploited vulnerabilities.
+5. Open **Dashboards → Vulnobs → Vulnobs — OSV demo** to see the data source in dashboard
    panels.
 
-Press Ctrl+C to stop; `--rm` removes the container. Scans you upload are kept in memory, so
-they are gone after a restart.
+Press Ctrl+C to stop; `--rm` removes the container. Pushed scans, like the rest of Grafana's
+data, live on the `vulnobs-data` volume, so they are still there the next time you run it.
+Reports uploaded on the Scan page are not stored.
 
 - **Update to the latest build:** `docker pull ghcr.io/rupeshkoushik07/grafana-vulnobs:main`,
   then run it again.
 - **Port 3000 already in use:** map another port, e.g. `-p 3001:3000`, and open
   http://localhost:3001.
+- **Start from scratch:** `docker volume rm vulnobs-data`.
 - **Check what you're running:** the image is signed by this repo's pipeline; see
   [Verify an image](#verify-an-image).
 
@@ -52,6 +64,15 @@ live OSV, and findings are ranked by CISA KEV and EPSS, so actively exploited CV
 
 <details>
 <summary>More screenshots</summary>
+
+**Assets:** the latest scan of every image running in the cluster (and anything else pushed
+to `/ingest`), most urgent first:
+
+![Assets page listing scanned images with severity counts and actively exploited findings](docs/screenshots/assets.png)
+
+**An asset**, with the namespaces running it and its findings ranked by exploit risk:
+
+![One scanned image's findings](docs/screenshots/asset-detail.png)
 
 **Search** a package across OSV:
 
@@ -84,8 +105,8 @@ Two plugins in one repo:
 
 | Plugin | Directory | Role |
 | --- | --- | --- |
-| **Data source** (Go backend) | [`rupesh-vulnobs-datasource/`](./rupesh-vulnobs-datasource) | Queries public CVE feeds. Works in Explore, dashboards, and — because it has a backend — **Grafana alert rules**. |
-| **App** | [`rupesh-vulnobs-app/`](./rupesh-vulnobs-app) | Custom pages (**Search**, **Scan**). Its Go backend matches packages against OSV **and enriches every CVE with EPSS + CISA KEV** to rank findings by real risk. Accepts pushed scans on `/ingest`. |
+| **Data source** (Go backend) | [`rupesh-vulnobs-datasource/`](./rupesh-vulnobs-datasource) | Queries public CVE feeds, and the scans the app has ingested. Works in Explore, dashboards, and — because it has a backend — **Grafana alert rules**. |
+| **App** | [`rupesh-vulnobs-app/`](./rupesh-vulnobs-app) | Custom pages (**Search**, **Scan**, **Assets**). Its Go backend matches packages against OSV **and enriches every CVE with EPSS + CISA KEV** to rank findings by real risk. Accepts pushed scans on `/ingest` and saves them to disk. |
 
 Only a backend **data source** can be used in Grafana Alerting, which is why the alertable
 primitive lives there; the app is layered alongside for interactive browsing and prioritization.
@@ -93,7 +114,13 @@ primitive lives there; the app is layered alongside for interactive browsing and
 ```mermaid
 flowchart TB
     user(["User&nbsp;/&nbsp;Browser"])
-    scanner["Trivy CronJob<br/>(deployed via Tanka)"]
+
+    subgraph k8s["Kubernetes (deployed via Tanka)"]
+        direction TB
+        pods["Running workloads"]
+        scanner["Scan CronJob<br/>discover images → Trivy → push"]
+        scanner -->|"list pods"| pods
+    end
 
     subgraph grafana["Grafana"]
         direction TB
@@ -102,8 +129,8 @@ flowchart TB
 
         subgraph app["App plugin — rupesh-vulnobs-app"]
             direction TB
-            appfe["Frontend pages<br/>Search · Scan"]
-            appbe["Go backend<br/>/search /scan /ingest /enrich<br/>match → enrich → prioritize"]
+            appfe["Frontend pages<br/>Search · Scan · Assets"]
+            appbe["Go backend<br/>/search /scan /ingest /prune /assets /enrich<br/>match → enrich → prioritize"]
             appfe -->|"getBackendSrv()"| appbe
         end
 
@@ -113,6 +140,8 @@ flowchart TB
             dsbe["Go backend<br/>QueryData · CheckHealth"]
             dsfe --> dsbe
         end
+
+        store[("assets.json<br/>on the data volume")]
     end
 
     osv[("OSV<br/>vulnerabilities")]
@@ -121,7 +150,9 @@ flowchart TB
 
     user --> appfe
     user --> dashes
-    scanner -->|"POST /ingest (scan JSON)"| appbe
+    scanner -->|"POST /ingest, /prune"| appbe
+    appbe -->|"save"| store
+    dsbe -->|"read ingested assets"| store
     dashes -->|"/api/ds/query"| dsbe
     alerting -->|"rule evaluation"| dsbe
     appbe -->|"HTTPS"| osv
@@ -141,12 +172,18 @@ flowchart TB
   probability) and **CISA KEV** (actively exploited) and given a priority score
   (`KEV > EPSS > severity`), so a CRITICAL-but-unexploited CVE can rank *below* a
   MODERATE-but-exploited one. `/enrich` exposes this engine on its own.
-- **Continuous ingest:** an external scanner (a Trivy CronJob, deployed via
-  [Tanka](./deploy/tanka)) pushes reports to `/ingest`, which stores the latest prioritized
-  posture per asset — turning manual uploads into continuous monitoring.
+- **Continuous cluster scanning:** a CronJob, deployed via [Tanka](./deploy/tanka), lists the
+  images of every running pod through the Kubernetes API, scans each with Trivy, and pushes
+  the reports to `/ingest` with the namespaces that run them. The app stores the latest
+  prioritized posture per image in `assets.json` on Grafana's data volume, so it survives
+  restarts, and `/prune` drops images that are no longer running. The **Assets** page shows
+  the result. Anything else, such as a CI job, can push to `/ingest` too.
 - **Dashboards / Alerting (data source):** panels and alert rules issue queries to the data
-  source backend (`QueryData`), which calls OSV and returns Grafana **data frames**. Only this
-  backend path can feed native alert rules.
+  source backend (`QueryData`), which returns Grafana **data frames**. A package or CVE query
+  calls OSV. An **Ingested assets** query reads the app's saved scans and returns one row
+  per asset with a single count (actively exploited, critical, high, …), which is the shape
+  alert rules need. The image provisions a rule that fires for every asset with an actively
+  exploited vulnerability.
 - **No secrets required:** OSV, EPSS, and KEV are all free public feeds needing no
   authentication.
 
@@ -169,13 +206,15 @@ project — see its own `README.md` for details.
 ## Deploy to Kubernetes (Tanka)
 
 A [Grafana Tanka](https://tanka.dev) environment in [`deploy/tanka/`](./deploy/tanka) deploys
-the whole stack to a cluster — the signed Vulnobs Grafana image, plus a Trivy CronJob that
-continuously scans an image and pushes results to the app's `/ingest` endpoint. It can also
-render a Kyverno policy that refuses to run the image unless its signature verifies.
+the whole stack to a cluster: the signed Vulnobs Grafana image on a persistent volume, and a
+CronJob that scans every image running in the cluster and feeds the Assets page and the alert
+rule. The scan job's service account can only list pods. The environment can also render a
+Kyverno policy that refuses to run the image unless its signature verifies.
 
 Every pull request and push to `main` deploys this environment to a throwaway kind cluster
-([`kubernetes.yml`](./.github/workflows/kubernetes.yml)) and checks that Grafana, both
-plugins, the provisioned data source and dashboard, and one scheduled Trivy scan all work.
+([`kubernetes.yml`](./.github/workflows/kubernetes.yml)) and checks the whole loop: the scan
+finds a running workload's image, the result survives a Grafana restart, the data source and
+alert rule read it, and the image is pruned once the workload is gone.
 
 ```bash
 cd deploy/tanka
@@ -190,8 +229,9 @@ Every push to `main` and every `v*` tag runs [`image.yml`](./.github/workflows/i
 which publishes `ghcr.io/rupeshkoushik07/grafana-vulnobs`: Grafana with both plugins baked in,
 for `linux/amd64` and `linux/arm64`.
 
-1. **Build the plugins** (frontend and Go backend) inside Docker.
-2. **Gate:** Trivy scans the plugin files and fails the run on any fixable HIGH or CRITICAL
+1. **Build what this repo ships** (both plugins' frontend and Go backend, and the cluster
+   scan helper) inside Docker.
+2. **Gate:** Trivy scans those files and fails the run on any fixable HIGH or CRITICAL
    vulnerability. This happens *before* anything is pushed.
 3. **Build and push** the image on a digest-pinned Grafana base.
 4. **SBOM:** Trivy generates a CycloneDX SBOM of the full image (`linux/amd64`). Findings in
