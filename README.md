@@ -14,15 +14,34 @@ when new critical CVEs hit your stack — all alongside your existing metrics, l
 
 ## Quick start
 
-Run Grafana with both plugins, the OSV data source and a demo dashboard already set up:
+Run Grafana with both plugins, the OSV data source and a demo dashboard already set up. The
+image is built for `linux/amd64` and `linux/arm64`, so it runs natively on Intel and Apple
+Silicon machines.
 
 ```bash
 docker run --rm -p 3000:3000 ghcr.io/rupeshkoushik07/grafana-vulnobs:main
 ```
 
-Open http://localhost:3000, log in as `admin` / `admin`, then go to **More apps → Vulnobs**.
-Sample reports to upload on the Scan page are in [`examples/`](./examples). The image is
-signed; see [Verify an image](#verify-an-image).
+Once the logs settle (10–20 seconds):
+
+1. Open http://localhost:3000 and log in as `admin` / `admin` (you can skip the prompt to
+   change the password).
+2. Go to **More apps → Vulnobs → Scan** and upload a sample report from
+   [`examples/`](./examples), such as `cyclonedx-payments-api.json`. Every package is matched
+   against live OSV and ranked by exploit risk.
+3. Use **Search** to look up a package or a CVE / GHSA id.
+4. Open **Dashboards → Vulnobs → Vulnobs — OSV demo** to see the data source in dashboard
+   panels.
+
+Press Ctrl+C to stop; `--rm` removes the container. Scans you upload are kept in memory, so
+they are gone after a restart.
+
+- **Update to the latest build:** `docker pull ghcr.io/rupeshkoushik07/grafana-vulnobs:main`,
+  then run it again.
+- **Port 3000 already in use:** map another port, e.g. `-p 3001:3000`, and open
+  http://localhost:3001.
+- **Check what you're running:** the image is signed by this repo's pipeline; see
+  [Verify an image](#verify-an-image).
 
 ## Screenshots
 
@@ -190,8 +209,17 @@ a 5-day cooldown on new releases.
 
 ### Verify an image
 
-You need [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) v3. Take the
-digest from the workflow run summary, or look it up:
+You need [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) v3
+(`brew install cosign` on macOS). Always verify by digest, never by tag: tags move, digests
+don't.
+
+Get the digest of the image you have. `docker pull` prints it on its `Digest:` line:
+
+```bash
+docker pull ghcr.io/rupeshkoushik07/grafana-vulnobs:main
+```
+
+You can also take it from the workflow run summary, or look it up without pulling:
 
 ```bash
 docker buildx imagetools inspect ghcr.io/rupeshkoushik07/grafana-vulnobs:main
