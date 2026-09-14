@@ -7,7 +7,7 @@ Bring vulnerability observability into Grafana. Query public CVE feeds, browse t
 vulnerabilities affecting your scanned containers and repositories, and alert natively
 when new critical CVEs hit your stack — all alongside your existing metrics, logs, and traces.
 
-> **Status:** early development · Phase 1 done, Phase 2 in progress · public data only. This project reads
+> **Status:** early development · public data only. This project reads
 > exclusively from public vulnerability feeds ([OSV](https://osv.dev),
 > [NVD](https://nvd.nist.gov), [GitHub Advisory Database](https://github.com/advisories))
 > and user-supplied scan output. It has no dependency on any private or internal system.
@@ -21,11 +21,11 @@ native alerting on top.
 
 ## Architecture
 
-Two plugins in one repo, built to grow in phases:
+Two plugins in one repo:
 
 | Plugin | Directory | Role |
 | --- | --- | --- |
-| **Data source** (Go backend) | [`rupesh-vulnobs-datasource/`](./rupesh-vulnobs-datasource) | Queries public CVE feeds. Works in Explore, dashboards, and — because it has a backend — **Grafana alert rules**. This is the Phase 1 focus. |
+| **Data source** (Go backend) | [`rupesh-vulnobs-datasource/`](./rupesh-vulnobs-datasource) | Queries public CVE feeds. Works in Explore, dashboards, and — because it has a backend — **Grafana alert rules**. |
 | **App** | [`rupesh-vulnobs-app/`](./rupesh-vulnobs-app) | Custom pages (**Search**, **Scan**). Its Go backend matches packages against OSV **and enriches every CVE with EPSS + CISA KEV** to rank findings by real risk. Accepts pushed scans on `/ingest`. |
 
 Only a backend **data source** can be used in Grafana Alerting, which is why the alertable
@@ -96,7 +96,7 @@ flowchart TB
 Prerequisites: Node.js, Go, [mage](https://magefile.org), and Docker.
 
 ```bash
-# Data source (Phase 1)
+# Data source
 cd rupesh-vulnobs-datasource
 npm install
 npm run dev                    # build + watch the frontend
@@ -180,8 +180,8 @@ To enforce this at admission time, set `verifyImageSignatures: true` in the
 
 ## Contributing
 
-Contributions welcome once Phase 1 lands. Adding a new feed source is designed to be a
-clean, self-contained extension point — a good first contribution.
+Contributions welcome. Adding a new feed source is designed to be a clean, self-contained
+extension point — a good first contribution.
 
 ## License
 
