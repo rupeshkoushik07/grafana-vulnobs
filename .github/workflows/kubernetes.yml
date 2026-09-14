@@ -17,8 +17,10 @@ permissions:
 
 env:
   TANKA_VERSION: v0.39.1
-  # A workload for the cluster scan to find.
-  DEMO_IMAGE: ghcr.io/aquasecurity/trivy:0.74.0
+  # A workload for the cluster scan to find. It must not be an image the scan
+  # job runs itself (Tanka's trivyImage, curl, the Vulnobs image): the job's own
+  # pod is running during discovery, so such an image is never pruned.
+  DEMO_IMAGE: ghcr.io/aquasecurity/trivy:0.73.0
   ALERT_RULE: Actively exploited vulnerability in a scanned asset
 
 jobs:
