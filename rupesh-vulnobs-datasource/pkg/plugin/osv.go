@@ -22,6 +22,7 @@ type osvVuln struct {
 	Aliases   []string        `json:"aliases"`
 	Published string          `json:"published"`
 	Modified  string          `json:"modified"`
+	Withdrawn string          `json:"withdrawn"`
 	Severity  []osvSeverity   `json:"severity"`
 	Affected  []osvAffected   `json:"affected"`
 	Refs      []osvReference  `json:"references"`
@@ -34,9 +35,15 @@ type osvSeverity struct {
 }
 
 type osvAffected struct {
+	Package osvPackage      `json:"package"`
 	Ranges  []osvRange      `json:"ranges"`
 	DBSpec  json.RawMessage `json:"database_specific"`
 	EcoSpec json.RawMessage `json:"ecosystem_specific"`
+}
+
+type osvPackage struct {
+	Name      string `json:"name"`
+	Ecosystem string `json:"ecosystem"`
 }
 
 type osvRange struct {
@@ -127,8 +134,9 @@ func (d *Datasource) osvPost(ctx context.Context, path string, body any) ([]byte
 	return raw, nil
 }
 
-// vulnsToFrame turns OSV vulnerabilities into a Grafana table data frame.
-func vulnsToFrame(name string, vulns []osvVuln) *data.Frame {
+// vulnsToFrame turns OSV vulnerabilities into a Grafana table data frame, one row
+// per CVE. pkg and version are what was queried, or empty for a lookup by id.
+func vulnsToFrame(name string, vulns []osvVuln, pkg, version string) *data.Frame {
 	var (
 		ids        []string
 		cves       []string
@@ -142,18 +150,17 @@ func vulnsToFrame(name string, vulns []osvVuln) *data.Frame {
 		urls       []string
 	)
 
-	for _, v := range vulns {
-		label := severityLabel(v)
-		ids = append(ids, v.ID)
-		cves = append(cves, cveOf(v))
-		severities = append(severities, label)
-		scores = append(scores, severityScore(label))
-		summaries = append(summaries, summaryOf(v))
-		fixed = append(fixed, fixedVersion(v))
-		cvss = append(cvss, firstCVSS(v))
-		published = append(published, parseTime(v.Published))
-		modified = append(modified, parseTime(v.Modified))
-		urls = append(urls, primaryURL(v))
+	for _, a := range normalizeVulns(vulns, pkg, version) {
+		ids = append(ids, a.ID)
+		cves = append(cves, a.CVE)
+		severities = append(severities, a.Severity)
+		scores = append(scores, severityScore(a.Severity))
+		summaries = append(summaries, a.Summary)
+		fixed = append(fixed, a.Fixed)
+		cvss = append(cvss, a.CVSS)
+		published = append(published, parseTime(a.Published))
+		modified = append(modified, parseTime(a.Modified))
+		urls = append(urls, a.URL)
 	}
 
 	frame := data.NewFrame(name,
@@ -188,23 +195,6 @@ func cveOf(v osvVuln) string {
 	return ""
 }
 
-// severityLabel best-effort extracts a qualitative severity (CRITICAL/HIGH/...)
-// from the record- or affected-level database_specific.severity fields.
-func severityLabel(v osvVuln) string {
-	if s := severityFromRaw(v.DBSpec); s != "" {
-		return s
-	}
-	for _, a := range v.Affected {
-		if s := severityFromRaw(a.DBSpec); s != "" {
-			return s
-		}
-		if s := severityFromRaw(a.EcoSpec); s != "" {
-			return s
-		}
-	}
-	return "UNKNOWN"
-}
-
 func severityFromRaw(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -235,18 +225,7 @@ func normalizeSeverity(s string) string {
 
 // severityScore maps a label to a numeric rank so alert rules can threshold it.
 func severityScore(label string) int64 {
-	switch label {
-	case "CRITICAL":
-		return 4
-	case "HIGH":
-		return 3
-	case "MODERATE":
-		return 2
-	case "LOW":
-		return 1
-	default:
-		return 0
-	}
+	return int64(severityRank(label))
 }
 
 func summaryOf(v osvVuln) string {
@@ -259,19 +238,6 @@ func summaryOf(v osvVuln) string {
 			return v.Details[:i]
 		}
 		return v.Details
-	}
-	return ""
-}
-
-func fixedVersion(v osvVuln) string {
-	for _, a := range v.Affected {
-		for _, r := range a.Ranges {
-			for _, e := range r.Events {
-				if e.Fixed != "" {
-					return e.Fixed
-				}
-			}
-		}
 	}
 	return ""
 }

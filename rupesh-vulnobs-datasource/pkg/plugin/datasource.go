@@ -98,7 +98,7 @@ func (d *Datasource) query(ctx context.Context, _ backend.PluginContext, query b
 		if err != nil {
 			return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("OSV lookup failed: %v", err))
 		}
-		response.Frames = append(response.Frames, vulnsToFrame("vulnerabilities", []osvVuln{*v}))
+		response.Frames = append(response.Frames, vulnsToFrame("vulnerabilities", []osvVuln{*v}, "", ""))
 		return response
 	}
 
@@ -112,7 +112,7 @@ func (d *Datasource) query(ctx context.Context, _ backend.PluginContext, query b
 		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("OSV query failed: %v", err))
 	}
 
-	response.Frames = append(response.Frames, vulnsToFrame("vulnerabilities", vulns))
+	response.Frames = append(response.Frames, vulnsToFrame("vulnerabilities", vulns, qm.Package, qm.Version))
 	return response
 }
 

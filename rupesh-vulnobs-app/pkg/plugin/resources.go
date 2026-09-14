@@ -33,7 +33,7 @@ func (a *App) handleSearch(w http.ResponseWriter, req *http.Request) {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
 		}
-		writeJSON(w, map[string]any{"vulns": toRows([]osvVuln{*v})})
+		writeJSON(w, map[string]any{"vulns": toRows([]osvVuln{*v}, "", "")})
 		return
 	}
 
@@ -48,7 +48,7 @@ func (a *App) handleSearch(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"vulns": toRows(vulns)})
+	writeJSON(w, map[string]any{"vulns": toRows(vulns, pkg, version)})
 }
 
 func writeJSON(w http.ResponseWriter, payload any) {
