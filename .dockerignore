@@ -1,0 +1,9 @@
+.git
+.github
+build
+deploy
+examples
+**/node_modules
+**/dist
+**/coverage
+**/.cache
