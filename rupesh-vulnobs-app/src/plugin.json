@@ -47,6 +47,13 @@
     },
     {
       "type": "page",
+      "name": "Assets",
+      "path": "/a/%PLUGIN_ID%/assets",
+      "addToNav": true,
+      "defaultNav": false
+    },
+    {
+      "type": "page",
       "icon": "cog",
       "name": "Configuration",
       "path": "/plugins/%PLUGIN_ID%",
