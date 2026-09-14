@@ -154,6 +154,10 @@ the whole stack to a cluster — the signed Vulnobs Grafana image, plus a Trivy 
 continuously scans an image and pushes results to the app's `/ingest` endpoint. It can also
 render a Kyverno policy that refuses to run the image unless its signature verifies.
 
+Every pull request and push to `main` deploys this environment to a throwaway kind cluster
+([`kubernetes.yml`](./.github/workflows/kubernetes.yml)) and checks that Grafana, both
+plugins, the provisioned data source and dashboard, and one scheduled Trivy scan all work.
+
 ```bash
 cd deploy/tanka
 tk show environments/default                                  # render the manifests

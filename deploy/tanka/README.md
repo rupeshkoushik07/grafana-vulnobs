@@ -1,13 +1,25 @@
 # Deploy Vulnobs with Tanka
 
 A [Grafana Tanka](https://tanka.dev) environment that deploys the Vulnobs stack to
-Kubernetes: **Grafana** (the signed Vulnobs image, with both plugins baked in), and a
-**Trivy CronJob** that continuously scans a target image and pushes the report to the
-app's `/ingest` endpoint for live, prioritized posture. Optionally, a **Kyverno policy**
-refuses to run the Vulnobs image unless its signature and SBOM attestation verify.
+Kubernetes: **Grafana** (the signed Vulnobs image, with both plugins, the OSV data source
+and a demo dashboard baked in), and a **Trivy CronJob** that continuously scans a target
+image and pushes the report to the app's `/ingest` endpoint for live, prioritized posture.
+Optionally, a **Kyverno policy** refuses to run the Vulnobs image unless its signature and
+SBOM attestation verify.
 
 It's written in plain [Jsonnet](https://jsonnet.org) with no external libraries, so
 it renders with nothing but `tk` installed.
+
+## Tested on every change
+
+The [`kubernetes.yml`](../../.github/workflows/kubernetes.yml) workflow deploys this
+environment to a throwaway [kind](https://kind.sigs.k8s.io) cluster on every pull request
+and push to `main`, using an image built from that commit. It checks that:
+
+- Grafana becomes ready with both plugins loaded and the app enabled,
+- the provisioned data source reaches OSV and the demo dashboard exists, and
+- one run of the scheduled Trivy scan completes and its report shows up in the app's
+  ingested assets.
 
 ## Layout
 
@@ -47,21 +59,34 @@ tk env set environments/default --server=https://your-api-server:6443
 tk apply environments/default     # shows a diff, then applies
 
 kubectl -n vulnobs port-forward svc/grafana 3000:3000
-# open http://localhost:3000 -> More apps -> Vulnobs
+# open http://localhost:3000, log in as admin / admin -> More apps -> Vulnobs
+```
+
+To run a scan now instead of waiting for the schedule:
+
+```bash
+kubectl -n vulnobs create job scan-now --from=cronjob/vulnobs-scan
 ```
 
 ## Configure
 
-Edit `environments/default/main.jsonnet`:
+These are top-level arguments, so you can override them on the command line without
+editing any file, for example `tk apply environments/default --tla-str imageTag=0.3.0`:
+
+| Argument | Default | Meaning |
+| --- | --- | --- |
+| `imageRepository` | `ghcr.io/rupeshkoushik07/grafana-vulnobs` | Vulnobs image |
+| `imageTag` | `main` | image tag (`main`, a release version like `0.3.0`, or `sha-<commit>`) |
+| `targetImage` | `python:3.12` | image the CronJob scans |
+
+Set these in `environments/default/main.jsonnet`:
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `imageRepository` | `ghcr.io/rupeshkoushik07/grafana-vulnobs` | Vulnobs image |
-| `imageTag` | `main` | image tag (`main`, a release version like `0.3.0`, or a commit SHA) |
 | `repo` | `rupeshkoushik07/grafana-vulnobs` | GitHub repo whose `image.yml` must have signed the image |
 | `verifyImageSignatures` | `false` | render the Kyverno policy |
-| `targetImage` | `python:3.12` | image the CronJob scans |
 | `scanSchedule` | `0 * * * *` | scan cadence (cron) |
+| `trivyImage` | `ghcr.io/aquasecurity/trivy:0.74.0` | scanner image |
 
 ## Enforce signed images (Kyverno)
 
@@ -86,7 +111,8 @@ Requirements:
   configure registry credentials for Kyverno.
 
 The policy only covers the Vulnobs image; other images in the cluster (such as the Trivy and
-curl images the CronJob uses) are not affected.
+curl images the CronJob uses) are not affected. The CI deployment above uses an unsigned
+image built from the pull request, so it runs with the policy off.
 
 ## Notes
 
@@ -96,3 +122,4 @@ curl images the CronJob uses) are not affected.
 - The CronJob demonstrates the continuous **scan → ingest** loop. In a real cluster you'd
   more likely run [Trivy Operator](https://aquasecurity.github.io/trivy-operator/) for
   cluster-wide scanning and point the ingest at its reports.
+- Ingested scans are held in memory by the app, so they reset when the Grafana pod restarts.
