@@ -12,6 +12,18 @@ when new critical CVEs hit your stack — all alongside your existing metrics, l
 > [NVD](https://nvd.nist.gov), [GitHub Advisory Database](https://github.com/advisories))
 > and user-supplied scan output. It has no dependency on any private or internal system.
 
+## Quick start
+
+Run Grafana with both plugins, the OSV data source and a demo dashboard already set up:
+
+```bash
+docker run --rm -p 3000:3000 ghcr.io/rupeshkoushik07/grafana-vulnobs:main
+```
+
+Open http://localhost:3000, log in as `admin` / `admin`, then go to **More apps → Vulnobs**.
+Sample reports to upload on the Scan page are in [`examples/`](./examples). The image is
+signed; see [Verify an image](#verify-an-image).
+
 ## Screenshots
 
 **Scan:** upload a Trivy, Grype, CycloneDX or SPDX report. Every package is matched against
