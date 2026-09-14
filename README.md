@@ -91,41 +91,6 @@ flowchart TB
 - **No secrets required:** OSV, EPSS, and KEV are all free public feeds needing no
   authentication.
 
-## Roadmap
-
-### Phase 1 — CVE query data source ✅
-- ✅ Backend Go data source querying **OSV** (free, no auth)
-- ✅ Query editor: pick ecosystem (npm, Go, PyPI, Maven, …) + package (+ optional version), or a CVE / GHSA id
-- ✅ Returns a table of vulnerabilities: id, cve, severity, cvss, summary, fixed version, references
-- ✅ Health check + config editor (OSV URL, optional NVD / GitHub API keys)
-
-### Phase 2 — App, asset inventory & matching ✅
-- ✅ **Search** page — query OSV live by package or CVE id, with severity summary + click-to-filter
-- ✅ **Scan** page — upload a **Trivy / Grype / CycloneDX / SPDX** report, extract its package inventory
-  (purl-aware, incl. Debian/Alpine OS packages), and match every package against live OSV — results
-  reflect vulnerabilities known *now*, not the scan's snapshot
-- ✅ Provisioned demo dashboard + data source instance
-- ⏳ NVD and GitHub Advisory as enrichment feeds
-
-### Phase 3 — Alerting & intelligence
-- Native Grafana alert rules on new critical CVEs affecting your assets
-- Scheduled feed sync
-- Optional "explain / remediate this CVE" via the Grafana LLM app
-
-### Phase 4 — Correlation & visualization
-- Integrate with **Loki**: ship vulnerability findings as structured log streams so they're
-  queryable and alertable alongside application logs/traces
-- Custom **panel plugin** (`rupesh-vulnobs-panel`) to visualize vulnerability posture (severity
-  timeline / heatmap)
-- Advanced query editor (LogQL-aware builder) and provisioned alert rules
-- Technical write-up of the design decisions for Grafana users
-
-### Phase 5 — Front-end architecture & quality
-- Refactor the app UI into a well-structured React/TS layer: reusable hooks, a clear state
-  boundary (**React Query** for server state + local UI state)
-- **Storybook** stories for the shared components
-- Broaden **Jest + React Testing Library** coverage
-
 ## Development
 
 Prerequisites: Node.js, Go, [mage](https://magefile.org), and Docker.
