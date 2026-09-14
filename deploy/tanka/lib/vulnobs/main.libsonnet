@@ -130,10 +130,10 @@
                   }],
                   containers: [{
                     name: 'push',
-                    image: 'curlimages/curl:8.10.1',
+                    image: 'curlimages/curl:8.22.0',
                     command: ['/bin/sh', '-c'],
                     args: [
-                      'curl -sS -X POST "%s/api/plugins/%s/resources/ingest?asset=%s" -H "Content-Type: application/json" --data-binary @/work/scan.json'
+                      'curl -fsS -X POST "%s/api/plugins/%s/resources/ingest?asset=%s" -H "Content-Type: application/json" --data-binary @/work/scan.json'
                       % [grafanaURL, appID, std.strReplace(params.targetImage, '/', '_')],
                     ],
                     volumeMounts: [{ name: 'work', mountPath: '/work' }],

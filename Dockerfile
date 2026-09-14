@@ -64,3 +64,8 @@ ENV GF_PATHS_PLUGINS=/usr/share/grafana/plugins-vulnobs \
     GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=rupesh-vulnobs-app,rupesh-vulnobs-datasource \
     GF_PLUGINS_PREINSTALL_DISABLED=true
 COPY --from=plugins / /usr/share/grafana/plugins-vulnobs/
+# Provision the OSV data source, the demo dashboard and the app itself, so a
+# plain `docker run` gives a working stack.
+COPY rupesh-vulnobs-datasource/provisioning/datasources/datasources.yml /etc/grafana/provisioning/datasources/vulnobs.yml
+COPY rupesh-vulnobs-datasource/provisioning/dashboards/ /etc/grafana/provisioning/dashboards/
+COPY image/provisioning/plugins/apps.yaml /etc/grafana/provisioning/plugins/vulnobs.yaml
