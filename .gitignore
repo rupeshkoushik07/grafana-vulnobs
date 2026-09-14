@@ -9,3 +9,7 @@ Thumbs.db
 **/dist/
 **/coverage/
 **/*.log
+**/.cache/
+
+# Plugin files exported by the image workflow for scanning
+/build/

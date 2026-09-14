@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Fail the build instead of silently resolving a module that go.mod/go.sum
+  # don't already pin.
+  GOFLAGS: -mod=readonly
+
 jobs:
   build-test:
     name: ${{ matrix.plugin }}
@@ -21,10 +26,12 @@ jobs:
       run:
         working-directory: ${{ matrix.plugin }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # --- Frontend ---
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
           cache: npm
@@ -46,7 +53,7 @@ jobs:
         run: npm run build
 
       # --- Backend (Go) ---
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: ${{ matrix.plugin }}/go.mod
           cache-dependency-path: ${{ matrix.plugin }}/go.sum
@@ -57,7 +64,7 @@ jobs:
           go test ./pkg/...
 
       - name: Install mage
-        run: go install github.com/magefile/mage@latest
+        run: go install github.com/magefile/mage@v1.17.2
 
       - name: Build backend
         run: mage -v build:linux

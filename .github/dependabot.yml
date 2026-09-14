@@ -1,7 +1,9 @@
 version: 2
 updates:
   - package-ecosystem: npm
-    directory: '/'
+    directories:
+      - '/rupesh-vulnobs-app'
+      - '/rupesh-vulnobs-datasource'
     schedule:
       interval: 'weekly'
     # Wait 5 days before updating to help circumvent supply chain attacks
@@ -43,22 +45,46 @@ updates:
           - 'minor'
           - 'patch'
 
+  - package-ecosystem: 'gomod'
+    directories:
+      - '/rupesh-vulnobs-app'
+      - '/rupesh-vulnobs-datasource'
+    schedule:
+      interval: 'weekly'
+    cooldown:
+      default-days: 5
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore'
+      include: 'scope'
+    groups:
+      go-modules:
+        patterns:
+          - '*'
+
+  # Actions are pinned to commit SHAs; Dependabot bumps the SHA and the
+  # trailing version comment together.
   - package-ecosystem: 'github-actions'
     directory: '/'
     schedule:
       interval: 'weekly'
+    cooldown:
+      default-days: 5
+    open-pull-requests-limit: 5
     commit-message:
       prefix: 'chore(ci)'
-    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns:
+          - '*'
 
-  - package-ecosystem: 'gomod'
+  # Base images in the root Dockerfile are pinned by digest.
+  - package-ecosystem: 'docker'
     directory: '/'
     schedule:
       interval: 'weekly'
+    cooldown:
+      default-days: 5
     open-pull-requests-limit: 5
-    allow:
-      - dependency-name: 'github.com/grafana/grafana-plugin-sdk-go'
-        dependency-type: 'all'
     commit-message:
-      prefix: 'chore'
-      include: 'scope'
+      prefix: 'chore(docker)'

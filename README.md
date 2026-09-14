@@ -145,8 +145,9 @@ project — see its own `README.md` for details.
 ## Deploy to Kubernetes (Tanka)
 
 A [Grafana Tanka](https://tanka.dev) environment in [`deploy/tanka/`](./deploy/tanka) deploys
-the whole stack to a cluster — Grafana with the plugins, plus a Trivy CronJob that
-continuously scans an image and pushes results to the app's `/ingest` endpoint.
+the whole stack to a cluster — the signed Vulnobs Grafana image, plus a Trivy CronJob that
+continuously scans an image and pushes results to the app's `/ingest` endpoint. It can also
+render a Kyverno policy that refuses to run the image unless its signature verifies.
 
 ```bash
 cd deploy/tanka
@@ -154,6 +155,63 @@ tk show environments/default                                  # render the manif
 tk env set environments/default --server=https://<api>:6443   # target your cluster
 tk apply environments/default                                 # diff, then apply
 ```
+
+## Supply chain
+
+Every push to `main` and every `v*` tag runs [`image.yml`](./.github/workflows/image.yml),
+which publishes `ghcr.io/rupeshkoushik07/grafana-vulnobs`: Grafana with both plugins baked in,
+for `linux/amd64` and `linux/arm64`.
+
+1. **Build the plugins** (frontend and Go backend) inside Docker.
+2. **Gate:** Trivy scans the plugin files and fails the run on any fixable HIGH or CRITICAL
+   vulnerability. This happens *before* anything is pushed.
+3. **Build and push** the image on a digest-pinned Grafana base.
+4. **SBOM:** Trivy generates a CycloneDX SBOM of the full image (`linux/amd64`). Findings in
+   the Grafana base image are listed in the run summary but don't fail the build, since
+   they can't be fixed in this repo.
+5. **Sign** the image by digest with cosign keyless signing: GitHub's OIDC token gets a
+   short-lived Sigstore certificate bound to this workflow, and the signature is recorded in
+   the public Rekor transparency log. There is no private key to manage or leak.
+6. **Attest** the SBOM to the same digest as a signed attestation.
+
+Dependencies are pinned at every layer: Go modules by `go.sum` (CI builds with
+`GOFLAGS=-mod=readonly`), npm packages by `package-lock.json` with `npm ci`, base images by
+digest, and every GitHub Action by full commit SHA. Dependabot keeps all four current, with
+a 5-day cooldown on new releases.
+
+### Verify an image
+
+You need [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) v3. Take the
+digest from the workflow run summary, or look it up:
+
+```bash
+docker buildx imagetools inspect ghcr.io/rupeshkoushik07/grafana-vulnobs:main
+```
+
+Check the signature:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp '^https://github\.com/rupeshkoushik07/grafana-vulnobs/\.github/workflows/image\.yml@refs/(heads/main|tags/v.+)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/rupeshkoushik07/grafana-vulnobs@sha256:<digest>
+```
+
+Check the SBOM attestation:
+
+```bash
+cosign verify-attestation \
+  --type cyclonedx \
+  --certificate-identity-regexp '^https://github\.com/rupeshkoushik07/grafana-vulnobs/\.github/workflows/image\.yml@refs/(heads/main|tags/v.+)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/rupeshkoushik07/grafana-vulnobs@sha256:<digest>
+```
+
+The identity is pinned to this repo's `image.yml` running on `main` or a release tag, so a
+signature made by any other repo, workflow or branch fails verification.
+
+To enforce this at admission time, set `verifyImageSignatures: true` in the
+[Tanka environment](./deploy/tanka#enforce-signed-images-kyverno).
 
 ## Contributing
 

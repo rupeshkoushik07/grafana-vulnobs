@@ -1,12 +1,13 @@
 // Vulnobs stack as plain Jsonnet — no external libraries required.
-// Deploys Grafana (with the Vulnobs plugins), and a Trivy CronJob that
-// continuously scans an image and pushes the result to the app's /ingest.
+// Deploys Grafana (the Vulnobs image, with both plugins baked in), and a Trivy
+// CronJob that continuously scans an image and pushes the result to the app's
+// /ingest. Optionally adds a Kyverno policy that refuses to run the Vulnobs
+// image unless it is signed, with an SBOM attestation, by this repo's image
+// workflow.
 {
   new(params):: {
     local ns = params.namespace,
     local appID = 'rupesh-vulnobs-app',
-    local dsID = 'rupesh-vulnobs-datasource',
-    local releaseBase = 'https://github.com/%s/releases/download/%s' % [params.repo, params.pluginVersion],
     local grafanaURL = 'http://grafana.%s.svc:3000' % ns,
 
     namespace: {
@@ -26,36 +27,17 @@
           template: {
             metadata: { labels: { app: 'grafana' } },
             spec: {
-              // Download and unpack the (unsigned) Vulnobs plugins from the GitHub
-              // release into a shared volume before Grafana starts.
-              initContainers: [{
-                name: 'install-plugins',
-                image: 'alpine:3.20',
-                command: ['/bin/sh', '-c'],
-                args: [|||
-                  set -eu
-                  apk add --no-cache curl unzip >/dev/null
-                  for p in %s %s; do
-                    curl -sSL "%s/${p}-%s.zip" -o "/tmp/${p}.zip"
-                    unzip -qo "/tmp/${p}.zip" -d /var/lib/grafana/plugins
-                  done
-                ||| % [appID, dsID, releaseBase, params.pluginVersion]],
-                volumeMounts: [{ name: 'plugins', mountPath: '/var/lib/grafana/plugins' }],
-              }],
               containers: [{
                 name: 'grafana',
-                image: params.grafanaImage,
+                image: '%s:%s' % [params.imageRepository, params.imageTag],
                 ports: [{ containerPort: 3000, name: 'http' }],
                 env: [
-                  { name: 'GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS', value: '%s,%s' % [appID, dsID] },
                   { name: 'GF_AUTH_ANONYMOUS_ENABLED', value: 'true' },
                   { name: 'GF_AUTH_ANONYMOUS_ORG_ROLE', value: 'Editor' },
                   { name: 'GF_SECURITY_ADMIN_PASSWORD', value: params.adminPassword },
                 ],
-                volumeMounts: [{ name: 'plugins', mountPath: '/var/lib/grafana/plugins' }],
                 readinessProbe: { httpGet: { path: '/api/health', port: 3000 }, initialDelaySeconds: 10 },
               }],
-              volumes: [{ name: 'plugins', emptyDir: {} }],
             },
           },
         },
@@ -68,6 +50,51 @@
         spec: {
           selector: { app: 'grafana' },
           ports: [{ name: 'http', port: 3000, targetPort: 3000 }],
+        },
+      },
+    },
+
+    // Admission control: only admit the Vulnobs image if it carries a valid
+    // keyless cosign signature and CycloneDX SBOM attestation made by
+    // .github/workflows/image.yml on main or a v* tag of params.repo.
+    [if params.verifyImageSignatures then 'imagePolicy']: {
+      local attestors = [{
+        entries: [{
+          keyless: {
+            issuer: 'https://token.actions.githubusercontent.com',
+            subjectRegExp: '^https://github\\.com/%s/\\.github/workflows/image\\.yml@refs/(heads/main|tags/v.+)$' % params.repo,
+            rekor: { url: 'https://rekor.sigstore.dev' },
+          },
+        }],
+      }],
+
+      clusterPolicy: {
+        apiVersion: 'kyverno.io/v1',
+        kind: 'ClusterPolicy',
+        metadata: { name: 'vulnobs-verify-image' },
+        spec: {
+          background: false,
+          rules: [{
+            name: 'require-signature-and-sbom',
+            match: { any: [{ resources: { kinds: ['Pod'] } }] },
+            verifyImages: [{
+              imageReferences: [params.imageRepository + ':*', params.imageRepository + '@*'],
+              // cosign v3 stores signatures as Sigstore bundles (OCI referrers).
+              // Kyverno's default `Cosign` type only looks for legacy .sig tags.
+              type: 'SigstoreBundle',
+              failureAction: 'Enforce',
+              required: true,
+              // Rewrite the tag to the verified digest so the pod runs exactly
+              // what was checked, even if the tag moves later.
+              mutateDigest: true,
+              verifyDigest: true,
+              attestors: attestors,
+              attestations: [{
+                type: 'https://cyclonedx.org/bom',
+                attestors: attestors,
+              }],
+            }],
+          }],
         },
       },
     },
