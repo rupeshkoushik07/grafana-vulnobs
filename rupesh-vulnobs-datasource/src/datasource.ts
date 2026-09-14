@@ -1,7 +1,7 @@
 import { DataSourceInstanceSettings, CoreApp, ScopedVars } from '@grafana/data';
 import { DataSourceWithBackend, getTemplateSrv } from '@grafana/runtime';
 
-import { MyQuery, MyDataSourceOptions, DEFAULT_QUERY } from './types';
+import { MyQuery, MyDataSourceOptions, DEFAULT_QUERY, QueryType } from './types';
 
 export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptions> {
   constructor(instanceSettings: DataSourceInstanceSettings<MyDataSourceOptions>) {
@@ -23,7 +23,7 @@ export class DataSource extends DataSourceWithBackend<MyQuery, MyDataSourceOptio
   }
 
   filterQuery(query: MyQuery): boolean {
-    // Only run when there is something to look up.
-    return !!(query.package || query.vulnId);
+    // Assets queries need no input; OSV lookups only run when there is something to look up.
+    return query.queryType === QueryType.Assets || !!(query.package || query.vulnId);
   }
 }

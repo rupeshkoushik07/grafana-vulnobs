@@ -6,8 +6,9 @@
   "metrics": true,
   "backend": true,
   "executable": "gpx_vulnobs",
+  "alerting": true,
   "info": {
-    "description": "Query public vulnerability feeds (OSV) from Grafana dashboards, Explore, and alert rules.",
+    "description": "Query public vulnerability feeds (OSV), and the scans ingested by the Vulnobs app, from Grafana dashboards, Explore, and alert rules.",
     "author": {
       "name": "Rupesh Punna",
       "url": "https://github.com/rupeshkoushik07"

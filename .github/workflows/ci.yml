@@ -60,8 +60,10 @@ jobs:
 
       - name: Vet & test (backend)
         run: |
-          go vet ./pkg/...
-          go test ./pkg/...
+          # Every Go package in the module, except any npm ships under node_modules.
+          pkgs=$(go list ./... | grep -v /node_modules/)
+          go vet $pkgs
+          go test $pkgs
 
       - name: Install mage
         run: go install github.com/magefile/mage@v1.17.2

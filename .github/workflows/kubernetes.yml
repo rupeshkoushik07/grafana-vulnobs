@@ -1,8 +1,10 @@
 name: Kubernetes
 
 # Deploys the stack to a throwaway kind cluster with Tanka and checks it end to
-# end: Grafana with both plugins, the provisioned data source and dashboard,
-# and one run of the scheduled Trivy scan pushing its report into /ingest.
+# end: Grafana with both plugins and its provisioning; a scheduled cluster scan
+# that finds a running workload's image and ingests it; the result surviving a
+# Grafana restart; the data source and provisioned alert rule reading it; and
+# the scan pruning the image once the workload is gone.
 
 on:
   push:
@@ -15,14 +17,15 @@ permissions:
 
 env:
   TANKA_VERSION: v0.39.1
-  # The scan job checks the published Vulnobs image itself.
-  SCAN_TARGET: ghcr.io/rupeshkoushik07/grafana-vulnobs:main
+  # A workload for the cluster scan to find.
+  DEMO_IMAGE: ghcr.io/aquasecurity/trivy:0.74.0
+  ALERT_RULE: Actively exploited vulnerability in a scanned asset
 
 jobs:
   deploy:
     name: Deploy with Tanka and test
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,6 +61,32 @@ jobs:
       - name: Install Tanka
         run: go install "github.com/grafana/tanka/cmd/tk@${TANKA_VERSION}"
 
+      - name: Write test helpers
+        run: |
+          cat > "$RUNNER_TEMP/grafana.sh" <<'EOF'
+          # Forward Grafana to localhost:3000 and wait until it answers.
+          grafana_up() {
+            pkill -f 'port-forward svc/grafana' || true
+            kubectl -n vulnobs port-forward svc/grafana 3000:3000 > "$RUNNER_TEMP/port-forward.log" 2>&1 &
+            curl -fsS --retry 30 --retry-delay 2 --retry-all-errors "$G/api/health" > /dev/null
+          }
+          # Run the scan CronJob now and wait for it to finish.
+          run_scan() {
+            kubectl -n vulnobs create job "$1" --from=cronjob/vulnobs-scan
+            for _ in $(seq 1 120); do
+              status=$(kubectl -n vulnobs get job "$1" -o jsonpath='{.status.succeeded}/{.status.failed}')
+              case "$status" in
+                1/*) break ;;
+                */[1-9]*) echo "scan job $1 failed"; kubectl -n vulnobs logs "job/$1" --all-containers --prefix || true; return 1 ;;
+              esac
+              sleep 10
+            done
+            kubectl -n vulnobs logs "job/$1" --all-containers --prefix
+            [ "$(kubectl -n vulnobs get job "$1" -o jsonpath='{.status.succeeded}')" = 1 ]
+          }
+          assets() { curl -fsS "$G/api/plugins/rupesh-vulnobs-app/resources/assets"; }
+          EOF
+
       - name: Deploy with Tanka
         working-directory: deploy/tanka
         run: |
@@ -65,50 +94,102 @@ jobs:
             --server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
           tk apply environments/default --auto-approve always \
             --tla-str imageRepository=vulnobs \
-            --tla-str imageTag=ci \
-            --tla-str targetImage="${SCAN_TARGET}"
+            --tla-str imageTag=ci
           kubectl -n vulnobs rollout status deployment/grafana --timeout=5m
 
       - name: Check plugins and provisioning
+        env:
+          G: http://admin:admin@127.0.0.1:3000
         run: |
-          kubectl -n vulnobs port-forward svc/grafana 3000:3000 > /tmp/port-forward.log 2>&1 &
-          G=http://admin:admin@127.0.0.1:3000
-          curl -fsS --retry 30 --retry-delay 2 --retry-all-errors "$G/api/health"
+          . "$RUNNER_TEMP/grafana.sh"
+          grafana_up
 
           echo "Both plugins are loaded:"
           for p in rupesh-vulnobs-app rupesh-vulnobs-datasource; do
             curl -fsS "$G/api/plugins/$p/settings" | jq -c '{id, signature, version: .info.version}'
           done
 
-          echo "The app is enabled:"
-          curl -fsS "$G/api/plugins/rupesh-vulnobs-app/settings" | jq -e '.enabled == true'
+          echo "The app is enabled, has the Assets page, and saves scans to disk:"
+          curl -fsS "$G/api/plugins/rupesh-vulnobs-app/settings" | jq -e '.enabled == true and any(.includes[]; .name == "Assets")'
+          curl -fsS "$G/api/plugins/rupesh-vulnobs-app/health" | jq -e '.message | test("saved in /var/lib/grafana/vulnobs")'
 
-          echo "The provisioned data source reaches OSV:"
+          echo "The provisioned data source reaches OSV and can read ingested assets:"
           curl -fsS "$G/api/datasources/uid/vulnobs-osv/health" | jq -e '.status == "OK"'
 
           echo "The demo dashboard is provisioned:"
           curl -fsS "$G/api/dashboards/uid/vulnobs-demo" | jq -e '.dashboard.title'
 
-      # Trigger the CronJob now instead of waiting for its schedule: Trivy scans
-      # the target image and curl pushes the report to the app's /ingest.
-      - name: Run the scheduled Trivy scan once
+      - name: Scan the cluster
+        env:
+          G: http://admin:admin@127.0.0.1:3000
         run: |
-          kubectl -n vulnobs create job scan-ci --from=cronjob/vulnobs-scan
-          kubectl -n vulnobs wait --for=condition=complete job/scan-ci --timeout=15m
+          . "$RUNNER_TEMP/grafana.sh"
+          kubectl create namespace demo
+          kubectl -n demo create deployment demo --image="$DEMO_IMAGE" -- sleep 86400
+          kubectl -n demo rollout status deployment/demo --timeout=5m
 
-          kubectl -n vulnobs port-forward svc/grafana 3000:3000 > /tmp/port-forward.log 2>&1 &
-          G=http://admin:admin@127.0.0.1:3000
-          curl -fsS --retry 30 --retry-delay 2 --retry-all-errors "$G/api/health" > /dev/null
+          run_scan scan-ci
+          grafana_up
+          assets | tee "$RUNNER_TEMP/assets.json" | jq '.assets[] | {asset, source, namespaces, total, kev}'
 
-          asset="${SCAN_TARGET//\//_}"
-          echo "Ingested posture for ${asset}:"
-          curl -fsS "$G/api/plugins/rupesh-vulnobs-app/resources/assets" \
-            | jq -e --arg a "$asset" '.assets[] | select(.asset == $a)'
+          echo "The demo workload's image was found and ingested:"
+          jq -e --arg img "$DEMO_IMAGE" \
+            '.assets[] | select(.asset == $img and .source == "cluster" and (.namespaces | index("demo")))' \
+            "$RUNNER_TEMP/assets.json"
+          echo "Excluded namespaces were not scanned:"
+          jq -e '[.assets[] | select((.namespaces // []) | index("kube-system"))] | length == 0' "$RUNNER_TEMP/assets.json"
+
+      - name: Scans survive a Grafana restart
+        env:
+          G: http://admin:admin@127.0.0.1:3000
+        run: |
+          . "$RUNNER_TEMP/grafana.sh"
+          kubectl -n vulnobs rollout restart deployment/grafana
+          kubectl -n vulnobs rollout status deployment/grafana --timeout=5m
+          grafana_up
+          assets | jq -e --arg img "$DEMO_IMAGE" '.storage.persistent and any(.assets[]; .asset == $img)'
+
+      - name: Data source and alert rule read ingested assets
+        env:
+          G: http://admin:admin@127.0.0.1:3000
+        run: |
+          . "$RUNNER_TEMP/grafana.sh"
+          grafana_up
+
+          echo "An 'Ingested assets' query returns the demo image:"
+          curl -fsS -X POST "$G/api/ds/query" -H 'Content-Type: application/json' \
+            -d '{"queries":[{"refId":"A","datasource":{"uid":"vulnobs-osv"},"queryType":"assets","metric":"kev"}]}' \
+            | jq -e --arg img "$DEMO_IMAGE" '.results.A.frames[0].data.values[0] | index($img)'
+
+          echo "The provisioned alert rule evaluates without errors:"
+          health=""
+          for _ in $(seq 1 30); do
+            health=$(curl -fsS "$G/api/prometheus/grafana/api/v1/rules" \
+              | jq -r --arg name "$ALERT_RULE" '[.data.groups[].rules[] | select(.name == $name) | .health] | first // ""')
+            echo "rule health: ${health:-not loaded yet}"
+            [ "$health" = ok ] && break
+            [ "$health" = error ] && break
+            sleep 10
+          done
+          curl -fsS "$G/api/prometheus/grafana/api/v1/rules" | jq --arg name "$ALERT_RULE" '.data.groups[].rules[] | select(.name == $name) | {health, state, lastError}'
+          [ "$health" = ok ]
+
+      - name: Images no longer running are pruned
+        env:
+          G: http://admin:admin@127.0.0.1:3000
+        run: |
+          . "$RUNNER_TEMP/grafana.sh"
+          kubectl delete namespace demo --wait=true
+          run_scan scan-ci-2
+          grafana_up
+          assets | jq -e --arg img "$DEMO_IMAGE" 'all(.assets[]; .asset != $img)'
 
       - name: Show cluster state
         if: failure()
         run: |
-          kubectl -n vulnobs get all
+          kubectl get pods -A
           kubectl -n vulnobs describe pods
-          kubectl -n vulnobs logs deployment/grafana --tail=200
-          kubectl -n vulnobs logs job/scan-ci --all-containers --tail=200 || true
+          kubectl -n vulnobs logs deployment/grafana --tail=300
+          for job in scan-ci scan-ci-2; do
+            kubectl -n vulnobs logs "job/$job" --all-containers --prefix --tail=200 || true
+          done

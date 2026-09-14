@@ -13,4 +13,7 @@ export const testIds = {
     container: 'data-testid scan-container',
     dropzone: 'data-testid scan-dropzone',
   },
+  assets: {
+    container: 'data-testid assets-container',
+  },
 };

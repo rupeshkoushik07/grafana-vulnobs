@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
 )
 
 // maxScanBytes caps the size of an uploaded scan report (25 MiB).
@@ -119,16 +121,25 @@ func (a *App) handleScan(w http.ResponseWriter, req *http.Request) {
 // step), matches it against live OSV, and stores it as the latest posture for the
 // named asset. This is what turns manual uploads into continuous monitoring.
 //
-//	POST /resources/ingest?asset=<name>
+//	POST /resources/ingest?asset=<name>[&source=<who>][&namespaces=<a,b>]
+//
+// source records who pushed the scan ("cluster" for the scan CronJob, "api" by
+// default) so /prune can remove stale assets of one source only. namespaces
+// lists where the image runs.
 func (a *App) handleIngest(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "use POST with a scan/SBOM body")
 		return
 	}
-	asset := strings.TrimSpace(req.URL.Query().Get("asset"))
+	q := req.URL.Query()
+	asset := strings.TrimSpace(q.Get("asset"))
 	if asset == "" {
 		writeError(w, http.StatusBadRequest, "missing required 'asset' query parameter")
 		return
+	}
+	source := strings.TrimSpace(q.Get("source"))
+	if source == "" {
+		source = "api"
 	}
 
 	raw, err := io.ReadAll(io.LimitReader(req.Body, maxScanBytes))
@@ -148,20 +159,32 @@ func (a *App) handleIngest(w http.ResponseWriter, req *http.Request) {
 
 	rows := a.scanPackages(req.Context(), pkgs)
 	a.enrichRows(req.Context(), rows)
-	posture := a.store.put(asset, format, rows)
+	posture, err := a.store.put(asset, source, format, splitList(q.Get("namespaces")), rows)
 
-	writeJSON(w, map[string]any{
+	resp := map[string]any{
 		"asset":       posture.Asset,
+		"source":      posture.Source,
 		"format":      posture.Format,
 		"total":       posture.Total,
+		"kev":         posture.KEV,
 		"counts":      posture.Counts,
 		"lastScanned": posture.LastScanned,
-	})
+	}
+	if err != nil {
+		backend.Logger.Warn("Ingested scan kept in memory but not saved to disk", "asset", asset, "error", err)
+		resp["warning"] = "kept in memory but not saved to disk: " + err.Error()
+	}
+	writeJSON(w, resp)
 }
 
 // handleAssets returns the current posture of every ingested asset (summary only).
 func (a *App) handleAssets(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, map[string]any{"assets": a.store.list()})
+	persistent, dir := a.store.persistent()
+	storage := map[string]any{"persistent": persistent}
+	if persistent {
+		storage["dataDir"] = dir
+	}
+	writeJSON(w, map[string]any{"assets": a.store.list(), "storage": storage})
 }
 
 // handleAsset returns the full posture (including per-vulnerability rows) for one
@@ -174,6 +197,35 @@ func (a *App) handleAsset(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, p)
+}
+
+// handlePrune removes assets from one source that are no longer present, e.g.
+// images the scan CronJob no longer finds running in the cluster.
+//
+//	POST /resources/prune   body: {"source": "cluster", "keep": ["python:3.12", ...]}
+func (a *App) handlePrune(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "use POST with {\"source\": ..., \"keep\": [...]}")
+		return
+	}
+	var body struct {
+		Source string   `json:"source"`
+		Keep   []string `json:"keep"`
+	}
+	if err := json.NewDecoder(io.LimitReader(req.Body, 1<<20)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(body.Source) == "" {
+		writeError(w, http.StatusBadRequest, "'source' is required, so only that source's assets are pruned")
+		return
+	}
+	removed, err := a.store.prune(body.Source, body.Keep)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"removed": removed})
 }
 
 // handleEnrich adds exploit context (EPSS + CISA KEV + a priority) to a list of
@@ -197,6 +249,17 @@ func (a *App) handleEnrich(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, map[string]any{"intel": intel})
 }
 
+// splitList splits a comma-separated list, dropping empty items.
+func splitList(s string) []string {
+	var out []string
+	for _, item := range strings.Split(s, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 // registerRoutes maps HTTP handlers onto the app's resource mux.
 func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/search", a.handleSearch)
@@ -204,5 +267,6 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/ingest", a.handleIngest)
 	mux.HandleFunc("/assets", a.handleAssets)
 	mux.HandleFunc("/asset", a.handleAsset)
+	mux.HandleFunc("/prune", a.handlePrune)
 	mux.HandleFunc("/enrich", a.handleEnrich)
 }

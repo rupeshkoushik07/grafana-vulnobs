@@ -19,6 +19,16 @@ export function ConfigEditor(props: Props) {
     });
   };
 
+  const onAssetsDataDirChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onOptionsChange({
+      ...options,
+      jsonData: {
+        ...jsonData,
+        assetsDataDir: event.target.value,
+      },
+    });
+  };
+
   // Secure field (only sent to the backend). Reserved for enrichment feeds.
   const onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({
@@ -56,6 +66,23 @@ export function ConfigEditor(props: Props) {
           onChange={onBaseUrlChange}
           value={jsonData.osvBaseUrl}
           placeholder="https://api.osv.dev"
+          width={40}
+        />
+      </InlineField>
+      <InlineField
+        label="Assets data directory"
+        labelWidth={18}
+        interactive
+        tooltip={
+          "The Vulnobs app's data directory (its dataDir setting), for 'Ingested assets' queries and alert rules. " +
+          'Grafana must be able to read it; in the Vulnobs image it is /var/lib/grafana/vulnobs.'
+        }
+      >
+        <Input
+          id="config-editor-assets-data-dir"
+          onChange={onAssetsDataDirChange}
+          value={jsonData.assetsDataDir}
+          placeholder="/var/lib/grafana/vulnobs"
           width={40}
         />
       </InlineField>
