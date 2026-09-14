@@ -7,7 +7,7 @@ Bring vulnerability observability into Grafana. Query public CVE feeds, browse t
 vulnerabilities affecting your scanned containers and repositories, and alert natively
 when new critical CVEs hit your stack — all alongside your existing metrics, logs, and traces.
 
-> **Status:** early development · Phase 1 done, Phase 2 in progress · public data only. This project reads
+> **Status:** early development · public data only. This project reads
 > exclusively from public vulnerability feeds ([OSV](https://osv.dev),
 > [NVD](https://nvd.nist.gov), [GitHub Advisory Database](https://github.com/advisories))
 > and user-supplied scan output. It has no dependency on any private or internal system.
@@ -21,11 +21,11 @@ native alerting on top.
 
 ## Architecture
 
-Two plugins in one repo, built to grow in phases:
+Two plugins in one repo:
 
 | Plugin | Directory | Role |
 | --- | --- | --- |
-| **Data source** (Go backend) | [`rupesh-vulnobs-datasource/`](./rupesh-vulnobs-datasource) | Queries public CVE feeds. Works in Explore, dashboards, and — because it has a backend — **Grafana alert rules**. This is the Phase 1 focus. |
+| **Data source** (Go backend) | [`rupesh-vulnobs-datasource/`](./rupesh-vulnobs-datasource) | Queries public CVE feeds. Works in Explore, dashboards, and — because it has a backend — **Grafana alert rules**. |
 | **App** | [`rupesh-vulnobs-app/`](./rupesh-vulnobs-app) | Custom pages (**Search**, **Scan**). Its Go backend matches packages against OSV **and enriches every CVE with EPSS + CISA KEV** to rank findings by real risk. Accepts pushed scans on `/ingest`. |
 
 Only a backend **data source** can be used in Grafana Alerting, which is why the alertable
@@ -91,47 +91,12 @@ flowchart TB
 - **No secrets required:** OSV, EPSS, and KEV are all free public feeds needing no
   authentication.
 
-## Roadmap
-
-### Phase 1 — CVE query data source ✅
-- ✅ Backend Go data source querying **OSV** (free, no auth)
-- ✅ Query editor: pick ecosystem (npm, Go, PyPI, Maven, …) + package (+ optional version), or a CVE / GHSA id
-- ✅ Returns a table of vulnerabilities: id, cve, severity, cvss, summary, fixed version, references
-- ✅ Health check + config editor (OSV URL, optional NVD / GitHub API keys)
-
-### Phase 2 — App, asset inventory & matching ✅
-- ✅ **Search** page — query OSV live by package or CVE id, with severity summary + click-to-filter
-- ✅ **Scan** page — upload a **Trivy / Grype / CycloneDX / SPDX** report, extract its package inventory
-  (purl-aware, incl. Debian/Alpine OS packages), and match every package against live OSV — results
-  reflect vulnerabilities known *now*, not the scan's snapshot
-- ✅ Provisioned demo dashboard + data source instance
-- ⏳ NVD and GitHub Advisory as enrichment feeds
-
-### Phase 3 — Alerting & intelligence
-- Native Grafana alert rules on new critical CVEs affecting your assets
-- Scheduled feed sync
-- Optional "explain / remediate this CVE" via the Grafana LLM app
-
-### Phase 4 — Correlation & visualization
-- Integrate with **Loki**: ship vulnerability findings as structured log streams so they're
-  queryable and alertable alongside application logs/traces
-- Custom **panel plugin** (`rupesh-vulnobs-panel`) to visualize vulnerability posture (severity
-  timeline / heatmap)
-- Advanced query editor (LogQL-aware builder) and provisioned alert rules
-- Technical write-up of the design decisions for Grafana users
-
-### Phase 5 — Front-end architecture & quality
-- Refactor the app UI into a well-structured React/TS layer: reusable hooks, a clear state
-  boundary (**React Query** for server state + local UI state)
-- **Storybook** stories for the shared components
-- Broaden **Jest + React Testing Library** coverage
-
 ## Development
 
 Prerequisites: Node.js, Go, [mage](https://magefile.org), and Docker.
 
 ```bash
-# Data source (Phase 1)
+# Data source
 cd rupesh-vulnobs-datasource
 npm install
 npm run dev                    # build + watch the frontend
@@ -215,8 +180,8 @@ To enforce this at admission time, set `verifyImageSignatures: true` in the
 
 ## Contributing
 
-Contributions welcome once Phase 1 lands. Adding a new feed source is designed to be a
-clean, self-contained extension point — a good first contribution.
+Contributions welcome. Adding a new feed source is designed to be a clean, self-contained
+extension point — a good first contribution.
 
 ## License
 
