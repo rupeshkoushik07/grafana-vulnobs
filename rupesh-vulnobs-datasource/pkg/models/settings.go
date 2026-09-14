@@ -12,8 +12,11 @@ const DefaultOsvBaseURL = "https://api.osv.dev"
 
 type PluginSettings struct {
 	// OsvBaseURL is the base URL of the OSV API. Defaults to DefaultOsvBaseURL.
-	OsvBaseURL string                `json:"osvBaseUrl"`
-	Secrets    *SecretPluginSettings `json:"-"`
+	OsvBaseURL string `json:"osvBaseUrl"`
+	// AssetsDataDir is the Vulnobs app's data directory (its dataDir setting).
+	// "Ingested assets" queries read the scans the app saved there.
+	AssetsDataDir string                `json:"assetsDataDir"`
+	Secrets       *SecretPluginSettings `json:"-"`
 }
 
 type SecretPluginSettings struct {
@@ -24,9 +27,10 @@ type SecretPluginSettings struct {
 
 func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSettings, error) {
 	settings := PluginSettings{}
-	err := json.Unmarshal(source.JSONData, &settings)
-	if err != nil {
-		return nil, fmt.Errorf("could not unmarshal PluginSettings json: %w", err)
+	if len(source.JSONData) > 0 {
+		if err := json.Unmarshal(source.JSONData, &settings); err != nil {
+			return nil, fmt.Errorf("could not unmarshal PluginSettings json: %w", err)
+		}
 	}
 
 	if settings.OsvBaseURL == "" {

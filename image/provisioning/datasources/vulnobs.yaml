@@ -1,0 +1,18 @@
+apiVersion: 1
+
+# The OSV data source, also reading the scans the Vulnobs app ingests (the same
+# directory as the app's dataDir), so dashboards and alert rules can use them.
+datasources:
+  - name: 'Vulnobs OSV'
+    uid: 'vulnobs-osv'
+    type: 'rupesh-vulnobs-datasource'
+    access: proxy
+    isDefault: false
+    orgId: 1
+    # Bump this when changing the settings below, so Grafana applies them to a
+    # data source it already has from an earlier version of the image.
+    version: 2
+    editable: true
+    jsonData:
+      osvBaseUrl: 'https://api.osv.dev'
+      assetsDataDir: '/var/lib/grafana/vulnobs'

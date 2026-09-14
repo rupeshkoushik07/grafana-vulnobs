@@ -32,14 +32,16 @@ func NewDatasource(_ context.Context, s backend.DataSourceInstanceSettings) (ins
 	}
 	return &Datasource{
 		baseURL:    strings.TrimRight(settings.OsvBaseURL, "/"),
+		assetsDir:  strings.TrimSpace(settings.AssetsDataDir),
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 	}, nil
 }
 
-// Datasource queries public vulnerability feeds (OSV) and returns the results as
-// Grafana data frames.
+// Datasource queries public vulnerability feeds (OSV), and the scans ingested
+// by the Vulnobs app, and returns the results as Grafana data frames.
 type Datasource struct {
 	baseURL    string
+	assetsDir  string
 	httpClient *http.Client
 }
 
@@ -75,6 +77,9 @@ type queryModel struct {
 	Package   string `json:"package"`
 	Version   string `json:"version"`
 	VulnID    string `json:"vulnId"`
+	// Metric picks the number an "assets" query returns per asset: kev (the
+	// default), critical, high, moderate, low, unknown, total, or all.
+	Metric string `json:"metric"`
 }
 
 func (d *Datasource) query(ctx context.Context, _ backend.PluginContext, query backend.DataQuery) backend.DataResponse {
@@ -91,6 +96,20 @@ func (d *Datasource) query(ctx context.Context, _ backend.PluginContext, query b
 	qm.Package = strings.TrimSpace(qm.Package)
 	qm.Version = strings.TrimSpace(qm.Version)
 	qm.VulnID = strings.TrimSpace(qm.VulnID)
+
+	// Ingested assets: the scans saved by the Vulnobs app, one row per asset.
+	if query.QueryType == QueryTypeAssets {
+		assets, err := loadIngestedAssets(d.assetsDir)
+		if err != nil {
+			return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
+		}
+		frame, err := assetsFrame(assets, strings.TrimSpace(qm.Metric))
+		if err != nil {
+			return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
+		}
+		response.Frames = append(response.Frames, frame)
+		return response
+	}
 
 	// Mode 1: direct lookup of a single vulnerability by id (CVE / GHSA / OSV id).
 	if qm.VulnID != "" {
@@ -129,8 +148,15 @@ func (d *Datasource) CheckHealth(ctx context.Context, _ *backend.CheckHealthRequ
 		}, nil
 	}
 
-	return &backend.CheckHealthResult{
-		Status:  backend.HealthStatusOk,
-		Message: fmt.Sprintf("Connected to OSV at %s", d.baseURL),
-	}, nil
+	message := fmt.Sprintf("Connected to OSV at %s", d.baseURL)
+	if d.assetsDir != "" {
+		if _, err := loadIngestedAssets(d.assetsDir); err != nil {
+			return &backend.CheckHealthResult{
+				Status:  backend.HealthStatusError,
+				Message: fmt.Sprintf("%s, but ingested assets can't be read: %v", message, err),
+			}, nil
+		}
+		message += fmt.Sprintf("; reading ingested assets from %s", d.assetsDir)
+	}
+	return &backend.CheckHealthResult{Status: backend.HealthStatusOk, Message: message}, nil
 }

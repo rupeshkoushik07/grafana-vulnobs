@@ -1,6 +1,13 @@
 import { DataSourceJsonData } from '@grafana/data';
 import { DataQuery } from '@grafana/schema';
 
+export enum QueryType {
+  // Look up vulnerabilities in OSV by package or by id.
+  Vulnerabilities = 'vulnerabilities',
+  // The scans ingested by the Vulnobs app, one row per asset.
+  Assets = 'assets',
+}
+
 export interface MyQuery extends DataQuery {
   // Package lookup mode
   ecosystem?: string;
@@ -8,6 +15,9 @@ export interface MyQuery extends DataQuery {
   version?: string;
   // Direct lookup mode (CVE / GHSA / OSV id). Takes precedence when set.
   vulnId?: string;
+  // Ingested assets mode: the number returned per asset (kev, critical, high,
+  // moderate, low, unknown, total, or all).
+  metric?: string;
 }
 
 export const DEFAULT_QUERY: Partial<MyQuery> = {
@@ -19,6 +29,8 @@ export const DEFAULT_QUERY: Partial<MyQuery> = {
  */
 export interface MyDataSourceOptions extends DataSourceJsonData {
   osvBaseUrl?: string;
+  // The Vulnobs app's data directory, where it saves ingested scans.
+  assetsDataDir?: string;
 }
 
 /**

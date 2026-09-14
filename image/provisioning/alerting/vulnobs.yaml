@@ -1,0 +1,48 @@
+apiVersion: 1
+
+# Fires for every ingested asset (for example an image running in the cluster)
+# that has a vulnerability CISA lists as actively exploited. Each asset is its
+# own alert instance, labelled with the asset, its source and namespaces.
+# Notifications go to the default contact point; route them where you want.
+groups:
+  - orgId: 1
+    name: vulnobs
+    folder: Vulnobs
+    interval: 1m
+    rules:
+      - uid: vulnobs-kev-in-asset
+        title: Actively exploited vulnerability in a scanned asset
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: vulnobs-osv
+            model:
+              refId: A
+              queryType: assets
+              metric: kev
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              datasource:
+                type: __expr__
+                uid: __expr__
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        executionErrorState: Error
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.asset }} has {{ $values.A.Value }} actively exploited vulnerabilities (CISA KEV)'
+          description: Open Vulnobs → Assets in Grafana to see them, ranked by exploit risk.
+        isPaused: false
