@@ -12,6 +12,34 @@ when new critical CVEs hit your stack — all alongside your existing metrics, l
 > [NVD](https://nvd.nist.gov), [GitHub Advisory Database](https://github.com/advisories))
 > and user-supplied scan output. It has no dependency on any private or internal system.
 
+## Screenshots
+
+**Scan:** upload a Trivy, Grype, CycloneDX or SPDX report. Every package is matched against
+live OSV, and findings are ranked by CISA KEV and EPSS, so actively exploited CVEs come first.
+
+![Scan results for a CycloneDX SBOM, with actively exploited Log4Shell CVEs ranked first](docs/screenshots/scan-cyclonedx.png)
+
+<details>
+<summary>More screenshots</summary>
+
+**Search** a package across OSV:
+
+![Search results for lodash](docs/screenshots/search.png)
+
+**Look up** a single advisory by CVE or GHSA id:
+
+![Lookup of CVE-2021-44228](docs/screenshots/search-cve.png)
+
+**Scan** a Trivy report (OS packages are skipped):
+
+![Scan results for a Trivy report](docs/screenshots/scan-trivy.png)
+
+**Dashboard** panels backed by the data source:
+
+![Demo dashboard querying the Vulnobs OSV data source](docs/screenshots/dashboard.png)
+
+</details>
+
 ## Why
 
 Security data usually lives in a separate tool from the metrics, logs, and traces teams
