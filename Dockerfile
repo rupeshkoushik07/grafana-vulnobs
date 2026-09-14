@@ -6,7 +6,7 @@
 # pinned by digest; Dependabot keeps them current.
 
 # --- Frontend: webpack bundles (architecture-independent) ---
-FROM --platform=$BUILDPLATFORM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS frontend
+FROM --platform=$BUILDPLATFORM node:26-alpine@sha256:ef24c5053d50fdc3e4e56eb4e7ddb7861874ab0fdc797046ba897581deb8e868 AS frontend
 WORKDIR /src/rupesh-vulnobs-app
 COPY rupesh-vulnobs-app/package.json rupesh-vulnobs-app/package-lock.json rupesh-vulnobs-app/.npmrc ./
 RUN npm ci --no-audit --no-fund
