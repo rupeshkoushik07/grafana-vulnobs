@@ -63,7 +63,7 @@ COPY --from=plugins / /plugins/
 COPY --from=backend /out/vulnobs-discover /bin/vulnobs-discover
 
 # --- Runtime ---
-FROM grafana/grafana:13.2.1@sha256:f772d434e8fab0049deb2b1b30abd43342bcfca1537614aa8d36080232cf4283
+FROM grafana/grafana:13.2.2@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0
 # Plugins live outside /var/lib/grafana so a data volume mounted there can't
 # hide them. Preinstall is disabled so nothing is downloaded into the signed
 # image at startup.
