@@ -61,7 +61,7 @@ FROM grafana/grafana:13.2.1@sha256:f772d434e8fab0049deb2b1b30abd43342bcfca153761
 # hide them. Preinstall is disabled so nothing is downloaded into the signed
 # image at startup.
 ENV GF_PATHS_PLUGINS=/usr/share/grafana/plugins-vulnobs \
-    GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=rupeshkoushik07-vulnobs-app,daringdogwood2354-vulnobs-datasource \
+    GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=rupeshkoushik07-vulnobs-app,rupeshkoushik07-vulnobs-datasource \
     GF_PLUGINS_PREINSTALL_DISABLED=true
 COPY --from=plugins / /usr/share/grafana/plugins-vulnobs/
 COPY --from=backend /out/vulnobs-discover /usr/local/bin/vulnobs-discover

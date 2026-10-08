@@ -23,11 +23,11 @@
       "type": "table",
       "title": "npm: lodash",
       "gridPos": { "h": 11, "w": 12, "x": 0, "y": 4 },
-      "datasource": { "type": "daringdogwood2354-vulnobs-datasource", "uid": "vulnobs-osv" },
+      "datasource": { "type": "rupeshkoushik07-vulnobs-datasource", "uid": "vulnobs-osv" },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "daringdogwood2354-vulnobs-datasource", "uid": "vulnobs-osv" },
+          "datasource": { "type": "rupeshkoushik07-vulnobs-datasource", "uid": "vulnobs-osv" },
           "ecosystem": "npm",
           "package": "lodash"
         }
@@ -48,11 +48,11 @@
       "type": "table",
       "title": "Go: github.com/gin-gonic/gin",
       "gridPos": { "h": 11, "w": 12, "x": 12, "y": 4 },
-      "datasource": { "type": "daringdogwood2354-vulnobs-datasource", "uid": "vulnobs-osv" },
+      "datasource": { "type": "rupeshkoushik07-vulnobs-datasource", "uid": "vulnobs-osv" },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "daringdogwood2354-vulnobs-datasource", "uid": "vulnobs-osv" },
+          "datasource": { "type": "rupeshkoushik07-vulnobs-datasource", "uid": "vulnobs-osv" },
           "ecosystem": "Go",
           "package": "github.com/gin-gonic/gin"
         }

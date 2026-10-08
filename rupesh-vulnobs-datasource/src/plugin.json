@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
   "type": "datasource",
   "name": "Vulnobs",
-  "id": "daringdogwood2354-vulnobs-datasource",
+  "id": "rupeshkoushik07-vulnobs-datasource",
   "metrics": true,
   "backend": true,
   "executable": "gpx_vulnobs",

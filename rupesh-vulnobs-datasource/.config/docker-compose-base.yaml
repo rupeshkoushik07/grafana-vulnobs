@@ -19,13 +19,13 @@ services:
     cap_add:
       - SYS_PTRACE
     volumes:
-      - ../dist:/var/lib/grafana/plugins/daringdogwood2354-vulnobs-datasource
+      - ../dist:/var/lib/grafana/plugins/rupeshkoushik07-vulnobs-datasource
       - ../provisioning:/etc/grafana/provisioning
       - ..:/root/rupesh-vulnobs-datasource
 
     environment:
       NODE_ENV: development
-      GF_LOG_FILTERS: plugin.daringdogwood2354-vulnobs-datasource:debug
+      GF_LOG_FILTERS: plugin.rupeshkoushik07-vulnobs-datasource:debug
       GF_LOG_LEVEL: debug
       GF_DATAPROXY_LOGGING: 1
-      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: daringdogwood2354-vulnobs-datasource
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: rupeshkoushik07-vulnobs-datasource

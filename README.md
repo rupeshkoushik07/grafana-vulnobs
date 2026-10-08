@@ -136,7 +136,7 @@ flowchart TB
             appfe -->|"getBackendSrv()"| appbe
         end
 
-        subgraph ds["Nested datasource — daringdogwood2354-vulnobs-datasource"]
+        subgraph ds["Nested datasource — rupeshkoushik07-vulnobs-datasource"]
             direction TB
             dsfe["Query &amp; Config editors"]
             dsbe["Go backend<br/>QueryData · CheckHealth"]
