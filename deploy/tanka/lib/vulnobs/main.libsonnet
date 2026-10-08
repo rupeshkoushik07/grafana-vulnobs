@@ -1,5 +1,5 @@
 // Vulnobs stack as plain Jsonnet — no external libraries required.
-// Deploys Grafana (the Vulnobs image, with both plugins baked in) on a
+// Deploys Grafana (the Vulnobs image, with the app and nested datasource baked in) on a
 // persistent volume, and a CronJob that scans every image running in the
 // cluster with Trivy and pushes the reports to the app's /ingest. Optionally
 // adds a Kyverno policy that refuses to run the Vulnobs image unless it is
@@ -7,7 +7,7 @@
 {
   new(params):: {
     local ns = params.namespace,
-    local appID = 'daringdogwood2354-vulnobs-app',
+    local appID = 'rupeshkoushik07-vulnobs-app',
     local image = '%s:%s' % [params.imageRepository, params.imageTag],
     local appAPI = 'http://grafana.%s.svc:3000/api/plugins/%s/resources' % [ns, appID],
 

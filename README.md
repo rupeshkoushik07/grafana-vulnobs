@@ -15,7 +15,7 @@ metrics, logs, and traces.
 
 ## Quick start
 
-Run Grafana with both plugins, the OSV data source, a demo dashboard and an alert rule
+Run Grafana with the Vulnobs app (including its nested OSV data source), a demo dashboard and an alert rule
 already set up. The image is built for `linux/amd64` and `linux/arm64`, so it runs natively
 on Intel and Apple Silicon machines.
 
@@ -34,7 +34,7 @@ Once the logs settle (10–20 seconds):
 4. Push a report the way a scanner would, then open **More apps → Vulnobs → Assets**:
 
    ```bash
-   curl -u admin:admin -X POST "http://localhost:3000/api/plugins/daringdogwood2354-vulnobs-app/resources/ingest?asset=payments-api" \
+   curl -u admin:admin -X POST "http://localhost:3000/api/plugins/rupeshkoushik07-vulnobs-app/resources/ingest?asset=payments-api" \
      -H "Content-Type: application/json" --data-binary @examples/cyclonedx-payments-api.json
    ```
 
@@ -101,15 +101,17 @@ native alerting on top.
 
 ## Architecture
 
-Two plugins in one repo:
+One installable app bundles the app experience and the native Grafana data source. The
+standalone data source project remains in the repository for the v0.4.0 fallback:
 
 | Plugin | Directory | Role |
 | --- | --- | --- |
-| **Data source** (Go backend) | [`rupesh-vulnobs-datasource/`](./rupesh-vulnobs-datasource) | Queries public CVE feeds, and the scans the app has ingested. Works in Explore, dashboards, and — because it has a backend — **Grafana alert rules**. |
-| **App** | [`rupesh-vulnobs-app/`](./rupesh-vulnobs-app) | Custom pages (**Search**, **Scan**, **Assets**). Its Go backend matches packages against OSV **and enriches every CVE with EPSS + CISA KEV** to rank findings by real risk. Accepts pushed scans on `/ingest` and saves them to disk. |
+| **Vulnobs App** | [`rupesh-vulnobs-app/`](./rupesh-vulnobs-app) | Custom pages (**Search**, **Scan**, **Assets**), ingestion and CVE enrichment. Its package bundles the nested datasource frontend and backend. |
+| **Nested Vulnobs OSV datasource** | [`rupesh-vulnobs-app/src/datasource/`](./rupesh-vulnobs-app/src/datasource) | Native Grafana datasource for Explore, dashboards, and alert rules. Keeps its existing datasource ID so saved dashboards and alert rules continue to resolve. |
 
-Only a backend **data source** can be used in Grafana Alerting, which is why the alertable
-primitive lives there; the app is layered alongside for interactive browsing and prioritization.
+The datasource remains a native backend **data source**, even though it is now distributed
+inside the app package. Grafana Alerting, Explore and dashboard queries continue to use that
+datasource interface; the app backend remains responsible for scans and enrichment.
 
 ```mermaid
 flowchart TB
@@ -134,7 +136,7 @@ flowchart TB
             appfe -->|"getBackendSrv()"| appbe
         end
 
-        subgraph ds["Data source plugin — rupesh-vulnobs-datasource"]
+        subgraph ds["Nested datasource — daringdogwood2354-vulnobs-datasource"]
             direction TB
             dsfe["Query &amp; Config editors"]
             dsbe["Go backend<br/>QueryData · CheckHealth"]
@@ -192,12 +194,19 @@ flowchart TB
 Prerequisites: Node.js, Go, [mage](https://magefile.org), and Docker.
 
 ```bash
-# Data source
-cd rupesh-vulnobs-datasource
-npm install
-npm run dev                    # build + watch the frontend
-mage -v build:darwinARM64      # build the Go backend (use your target arch)
-docker compose up              # start Grafana at http://localhost:3000
+# App frontend includes the nested datasource frontend
+cd rupesh-vulnobs-app
+npm ci
+npm run dev                    # build + watch both frontends
+mage -v build:darwinARM64      # build the app backend
+
+# The nested datasource backend is built from its standalone Go module and
+# copied into app/dist/datasource for local packaging.
+cd ../rupesh-vulnobs-datasource
+mage -v build:darwinARM64
+cp dist/gpx_vulnobs_darwin_arm64 ../rupesh-vulnobs-app/dist/datasource/
+cd ../rupesh-vulnobs-app
+docker compose up               # start Grafana at http://localhost:3000
 ```
 
 Each plugin is a standard [`@grafana/create-plugin`](https://grafana.com/developers/plugin-tools)
@@ -226,10 +235,10 @@ tk apply environments/default                                 # diff, then apply
 ## Supply chain
 
 Every push to `main` and every `v*` tag runs [`image.yml`](./.github/workflows/image.yml),
-which publishes `ghcr.io/rupeshkoushik07/grafana-vulnobs`: Grafana with both plugins baked in,
+which publishes `ghcr.io/rupeshkoushik07/grafana-vulnobs`: Grafana with the bundled Vulnobs app,
 for `linux/amd64` and `linux/arm64`.
 
-1. **Build what this repo ships** (both plugins' frontend and Go backend, and the cluster
+1. **Build what this repo ships** (the app and nested datasource frontends and Go backends, and the cluster
    scan helper) inside Docker.
 2. **Gate:** Trivy scans those files and fails the run on any fixable HIGH or CRITICAL
    vulnerability. This happens *before* anything is pushed.

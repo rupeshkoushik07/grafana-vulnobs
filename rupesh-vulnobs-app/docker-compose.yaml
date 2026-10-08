@@ -3,3 +3,6 @@ services:
     extends:
       file: .config/docker-compose-base.yaml
       service: grafana
+    environment:
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: rupeshkoushik07-vulnobs-app,daringdogwood2354-vulnobs-datasource
+      GF_LOG_FILTERS: plugin.rupeshkoushik07-vulnobs-app:debug,plugin.daringdogwood2354-vulnobs-datasource:debug
