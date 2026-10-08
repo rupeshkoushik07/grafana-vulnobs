@@ -68,10 +68,11 @@ jobs:
           kubectl create namespace vulnobs
           kubectl -n vulnobs create deployment postgres \
             --image=postgres:17-alpine \
-            --env=POSTGRES_DB=vulnobs \
-            --env=POSTGRES_USER=vulnobs \
-            --env=POSTGRES_PASSWORD=vulnobs-test \
             --port=5432
+          kubectl -n vulnobs set env deployment/postgres \
+            POSTGRES_DB=vulnobs \
+            POSTGRES_USER=vulnobs \
+            POSTGRES_PASSWORD=vulnobs-test
           kubectl -n vulnobs expose deployment postgres --port=5432
           kubectl -n vulnobs rollout status deployment/postgres --timeout=5m
           kubectl -n vulnobs exec deployment/postgres -- psql -U vulnobs -d vulnobs -v ON_ERROR_STOP=1 -c "CREATE TABLE vulnobs_assets (tenant_id TEXT NOT NULL, asset TEXT NOT NULL, source TEXT NOT NULL, posture JSONB NOT NULL, PRIMARY KEY (tenant_id, asset)); INSERT INTO vulnobs_assets (tenant_id, asset, source, posture) VALUES ('ci', 'expired-fixture', 'cluster', '{\"asset\":\"expired-fixture\",\"source\":\"cluster\",\"lastScanned\":\"2024-01-01T00:00:00Z\",\"counts\":{},\"kev\":0,\"total\":0}');"
