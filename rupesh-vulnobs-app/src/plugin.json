@@ -33,7 +33,36 @@
         "url": "https://github.com/rupeshkoushik07/grafana-vulnobs/issues"
       }
     ],
-    "screenshots": [],
+    "screenshots": [
+      {
+        "name": "Asset Detail",
+        "path": "img/screenshots/asset-detail.png"
+      },
+      {
+        "name": "Assets",
+        "path": "img/screenshots/assets.png"
+      },
+      {
+        "name": "Dashboard",
+        "path": "img/screenshots/dashboard.png"
+      },
+      {
+        "name": "Scan Cyclonedx",
+        "path": "img/screenshots/scan-cyclonedx.png"
+      },
+      {
+        "name": "Scan Trivy",
+        "path": "img/screenshots/scan-trivy.png"
+      },
+      {
+        "name": "Search Cve",
+        "path": "img/screenshots/search-cve.png"
+      },
+      {
+        "name": "Search",
+        "path": "img/screenshots/search.png"
+      }
+    ],
     "version": "%VERSION%",
     "updated": "%TODAY%"
   },
