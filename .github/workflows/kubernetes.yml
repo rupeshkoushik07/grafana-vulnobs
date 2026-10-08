@@ -75,7 +75,12 @@ jobs:
             POSTGRES_PASSWORD=vulnobs-test
           kubectl -n vulnobs expose deployment postgres --port=5432
           kubectl -n vulnobs rollout status deployment/postgres --timeout=5m
-          kubectl -n vulnobs exec deployment/postgres -- sh -c 'until pg_isready -U vulnobs -d vulnobs; do sleep 1; done'
+          for _ in $(seq 1 60); do
+            if kubectl -n vulnobs exec deployment/postgres -- psql -U vulnobs -d vulnobs -c 'SELECT 1' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
           kubectl -n vulnobs exec deployment/postgres -- psql -U vulnobs -d vulnobs -v ON_ERROR_STOP=1 -c "CREATE TABLE vulnobs_assets (tenant_id TEXT NOT NULL, asset TEXT NOT NULL, source TEXT NOT NULL, posture JSONB NOT NULL, PRIMARY KEY (tenant_id, asset)); INSERT INTO vulnobs_assets (tenant_id, asset, source, posture) VALUES ('ci', 'expired-fixture', 'cluster', '{\"asset\":\"expired-fixture\",\"source\":\"cluster\",\"lastScanned\":\"2024-01-01T00:00:00Z\",\"counts\":{},\"kev\":0,\"total\":0}');"
           signing_key="$(openssl rand -hex 32)"
           storage_token="$(VULNOBS_TOKEN_SIGNING_KEY="$signing_key" python3 tools/create-storage-token.py --tenant-id ci --lifetime-days 1)"
@@ -214,6 +219,7 @@ jobs:
         run: |
           kubectl get pods -A
           kubectl -n vulnobs describe pods
+          kubectl -n vulnobs logs deployment/postgres --tail=200 || true
           kubectl -n vulnobs logs deployment/grafana --tail=300 || true
           for job in scan-ci scan-ci-2; do
             kubectl -n vulnobs logs "job/$job" --all-containers --prefix --tail=200 || true
