@@ -17,9 +17,10 @@ function(
     imageTag: imageTag,
     adminPassword: 'admin',
 
-    // Grafana's data volume: its database and the ingested scans.
+    // Grafana's database and plugin state; scan posture is stored separately.
     storageSize: '1Gi',
     storageClassName: null,  // null uses the cluster's default StorageClass
+    storageRetentionDays: 90,
 
     // Also render a Kyverno ClusterPolicy that only admits the image if its
     // signature and SBOM attestation verify. Needs Kyverno in the cluster.

@@ -200,9 +200,20 @@ flowchart TB
   per asset with a single count (actively exploited, critical, high, …), which is the shape
   alert rules need. The image provisions a rule that fires for every asset with an actively
   exploited vulnerability.
-- OSV, EPSS, and KEV are public feeds and need no credentials. The shared storage API uses a
-  high-entropy bearer token stored in Grafana's `secureJsonData`; the App and datasource must
-  use the same token.
+- OSV, EPSS, and KEV are public feeds and need no credentials. The storage API verifies a
+  signed, expiring tenant credential. The App and datasource each keep that credential in
+  Grafana's `secureJsonData` and must use the same tenant credential.
+
+### Choose where storage runs
+
+- **Self-hosted Grafana:** run the storage API and PostgreSQL with Docker Compose, or deploy
+  the API with Tanka and connect it to self-managed or managed PostgreSQL. The API keeps
+  normalized findings and asset metadata for 90 days by default; set
+  `VULNOBS_RETENTION_DAYS` (1–3650) to change retention.
+- **Grafana Cloud:** operate or use an externally hosted Vulnobs Storage API. Configure its
+  HTTPS URL and the tenant's signed token independently in the App and nested datasource
+  settings. The storage service operator issues credentials and controls PostgreSQL and
+  retention; the plugin does not host the service inside Grafana Cloud.
 
 ## Development
 
@@ -221,7 +232,9 @@ cd ../rupesh-vulnobs-datasource
 mage -v build:darwinARM64
 cp dist/gpx_vulnobs_darwin_arm64 ../rupesh-vulnobs-app/dist/datasource/
 cd ../rupesh-vulnobs-app
-  docker compose up               # local setup instructions are in the app README
+export VULNOBS_TOKEN_SIGNING_KEY="$(openssl rand -hex 32)"
+export VULNOBS_STORAGE_TOKEN="$(VULNOBS_TOKEN_SIGNING_KEY="$VULNOBS_TOKEN_SIGNING_KEY" python3 ../tools/create-storage-token.py --tenant-id local-dev)"
+docker compose up
 ```
 
 Each plugin is a standard [`@grafana/create-plugin`](https://grafana.com/developers/plugin-tools)

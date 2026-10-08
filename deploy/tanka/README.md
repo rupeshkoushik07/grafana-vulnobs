@@ -3,10 +3,11 @@
 A [Grafana Tanka](https://tanka.dev) environment that deploys the Vulnobs stack to
 Kubernetes:
 
-- **Grafana**, running the signed Vulnobs image (the bundled app and nested OSV data source, a demo
+- **Grafana**, running the Vulnobs image (the bundled app and nested OSV data source, a demo
   dashboard and an alert rule baked in) on a persistent volume.
 - **Vulnobs storage API**, which authenticates requests and stores tenant-isolated asset postures
-  in PostgreSQL. PostgreSQL can be self-managed or managed externally.
+  in PostgreSQL. It verifies signed, expiring tenant credentials and purges records older than
+  the configured retention period. PostgreSQL can be self-managed or managed externally.
 - A **scan CronJob** that finds every image running in the cluster, scans each one with
   Trivy, and pushes the reports to the app's `/ingest` endpoint. The results show up on the
   app's **Assets** page, ranked by exploit risk, and feed an alert rule that fires for any
@@ -23,8 +24,8 @@ The [`kubernetes.yml`](../../.github/workflows/kubernetes.yml) workflow deploys 
 environment to a throwaway [kind](https://kind.sigs.k8s.io) cluster on every pull request
 and push to `main`, using an image built from that commit. It checks that:
 
-- Grafana becomes ready with the bundled app and datasource loaded, the app enabled with its Assets page, and
-  scans saved to the data volume;
+- Grafana becomes ready with the bundled app and datasource loaded, the app enabled with its
+  Assets page, and the authenticated storage API reachable;
 - the provisioned data source reaches OSV and the demo dashboard exists;
 - a scan finds a demo workload's image in its namespace, skips excluded namespaces, and
   ingests the report;
@@ -87,11 +88,14 @@ tk show environments/default      # applyable Kubernetes YAML
 # point the environment at your cluster
 tk env set environments/default --server=https://your-api-server:6443
 
-# Create/provision PostgreSQL, then supply its URL and a random tenant token.
+# Create/provision PostgreSQL and issue a signed tenant token.
 kubectl create namespace vulnobs
+export VULNOBS_TOKEN_SIGNING_KEY="$(openssl rand -hex 32)"
+export VULNOBS_STORAGE_TOKEN="$(VULNOBS_TOKEN_SIGNING_KEY="$VULNOBS_TOKEN_SIGNING_KEY" python3 ../../tools/create-storage-token.py --tenant-id production-grafana)"
 kubectl -n vulnobs create secret generic vulnobs-storage \
   --from-literal=database-url='postgres://USER:PASSWORD@DB_HOST:5432/vulnobs?sslmode=require' \
-  --from-literal=storage-token="$(openssl rand -hex 32)"
+  --from-literal=token-signing-key="$VULNOBS_TOKEN_SIGNING_KEY" \
+  --from-literal=storage-token="$VULNOBS_STORAGE_TOKEN"
 
 tk apply environments/default     # shows a diff, then applies
 
@@ -99,13 +103,16 @@ kubectl -n vulnobs port-forward svc/grafana 3000:3000
 # open http://localhost:3000, log in as admin / admin -> More apps -> Vulnobs -> Assets
 ```
 
-Grafana provisions the same token securely into the App and datasource. The
-storage service derives an opaque tenant ID from the token, so separate tokens
-cannot read or change one another's assets. Keep PostgreSQL private and require
-TLS for connections outside the cluster.
+Grafana provisions the signed token independently into the App and datasource.
+The API verifies its HMAC signature and expiry, then takes the tenant ID from the
+verified claims—not from a request parameter. Keep the signing key private,
+rotate it to revoke credentials, keep PostgreSQL private, and require TLS for
+connections outside the cluster. Retention defaults to 90 days; set
+`storageRetentionDays` in `environments/default/main.jsonnet` to a value from 1
+to 3650.
 
 To migrate an existing installation's JSON store, first back up the old file,
-then copy it out of the Grafana pod and import it with the same token configured
+then copy it out of the Grafana pod and import it with the signed token configured
 in the Kubernetes Secret:
 
 ```bash
@@ -147,6 +154,7 @@ Set these in `environments/default/main.jsonnet`:
 | `trivyImage` | `ghcr.io/aquasecurity/trivy:0.74.0` | scanner image |
 | `storageSize` | `1Gi` | size of Grafana's data volume |
 | `storageClassName` | `null` | StorageClass for the volume; `null` uses the cluster default |
+| `storageRetentionDays` | `90` | age in days before stored scan postures are deleted (1–3650) |
 | `repo` | `rupeshkoushik07/grafana-vulnobs` | GitHub repo whose `image.yml` must have signed the image |
 | `verifyImageSignatures` | `false` | render the Kyverno policy |
 
@@ -188,4 +196,6 @@ image built from the pull request, so it runs with the policy off.
   cluster.
 - The app matches each image's language packages (npm, PyPI, Go, Maven, …) against OSV. OS
   packages such as Debian or Alpine ones are counted but not matched.
-- Scan postures are stored in PostgreSQL, independently of Grafana's data volume.
+- Scan postures contain normalized metadata and findings, not the original uploaded report.
+  Records older than the configured retention window are deleted automatically, independently
+  of Grafana's data volume.

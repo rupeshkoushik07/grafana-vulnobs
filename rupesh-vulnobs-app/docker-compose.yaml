@@ -21,6 +21,8 @@ services:
     command: ['/usr/local/bin/vulnobs-storage']
     environment:
       DATABASE_URL: postgres://vulnobs:vulnobs-local@postgres:5432/vulnobs?sslmode=disable
+      VULNOBS_TOKEN_SIGNING_KEY: ${VULNOBS_TOKEN_SIGNING_KEY:?set a 32-byte signing key}
+      VULNOBS_RETENTION_DAYS: ${VULNOBS_RETENTION_DAYS:-90}
     depends_on:
       postgres:
         condition: service_healthy
@@ -32,7 +34,7 @@ services:
     environment:
       GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: rupeshkoushik07-vulnobs-app,rupeshkoushik07-vulnobs-datasource
       GF_LOG_FILTERS: plugin.rupeshkoushik07-vulnobs-app:debug,plugin.rupeshkoushik07-vulnobs-datasource:debug
-      VULNOBS_STORAGE_TOKEN: local-development-only-token-change-this-32chars
+      VULNOBS_STORAGE_TOKEN: ${VULNOBS_STORAGE_TOKEN:?create a signed storage token}
     depends_on:
       vulnobs-storage:
         condition: service_started

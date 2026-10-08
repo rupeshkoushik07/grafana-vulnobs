@@ -18,7 +18,7 @@
     },
 
     grafana: {
-      // Grafana's data directory: its database, and the scans the app ingests.
+      // Grafana's database and plugin state; scan posture lives in PostgreSQL.
       pvc: {
         apiVersion: 'v1',
         kind: 'PersistentVolumeClaim',
@@ -95,6 +95,12 @@
                 env: [{
                   name: 'DATABASE_URL',
                   valueFrom: { secretKeyRef: { name: 'vulnobs-storage', key: 'database-url' } },
+                }, {
+                  name: 'VULNOBS_TOKEN_SIGNING_KEY',
+                  valueFrom: { secretKeyRef: { name: 'vulnobs-storage', key: 'token-signing-key' } },
+                }, {
+                  name: 'VULNOBS_RETENTION_DAYS',
+                  value: std.toString(params.storageRetentionDays),
                 }],
                 readinessProbe: { httpGet: { path: '/healthz', port: 8080 }, initialDelaySeconds: 5 },
               }],

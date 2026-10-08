@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -17,34 +19,65 @@ import (
 const maxRequestBytes = 25 << 20
 
 type posture struct {
-	Asset       string          `json:"asset"`
-	Source      string          `json:"source"`
-	Namespaces  []string        `json:"namespaces,omitempty"`
-	Format      string          `json:"format"`
-	LastScanned time.Time       `json:"lastScanned"`
-	Counts      map[string]int  `json:"counts"`
-	KEV         int             `json:"kev"`
-	Total       int             `json:"total"`
-	Rows        json.RawMessage `json:"rows,omitempty"`
+	Asset       string         `json:"asset"`
+	Source      string         `json:"source"`
+	Namespaces  []string       `json:"namespaces,omitempty"`
+	Format      string         `json:"format"`
+	LastScanned time.Time      `json:"lastScanned"`
+	Counts      map[string]int `json:"counts"`
+	KEV         int            `json:"kev"`
+	Total       int            `json:"total"`
+	Rows        []finding      `json:"rows,omitempty"`
+}
+
+type finding struct {
+	Package       string  `json:"package"`
+	Ecosystem     string  `json:"ecosystem"`
+	Version       string  `json:"version"`
+	ID            string  `json:"id"`
+	CVE           string  `json:"cve"`
+	Severity      string  `json:"severity"`
+	SeverityScore int     `json:"severityScore"`
+	FixedVersion  string  `json:"fixedVersion"`
+	Summary       string  `json:"summary"`
+	URL           string  `json:"url"`
+	EPSS          float64 `json:"epss"`
+	KEV           bool    `json:"kev"`
+	Priority      int     `json:"priority"`
+	Action        string  `json:"action"`
 }
 
 type server struct {
-	db *pgxpool.Pool
+	db         *pgxpool.Pool
+	signingKey []byte
 }
 
-func New(db *pgxpool.Pool) (http.Handler, error) {
+func New(db *pgxpool.Pool, signingKey []byte) (http.Handler, error) {
+	if len(signingKey) < 32 {
+		return nil, errors.New("storage token signing key must be at least 32 bytes")
+	}
 	if _, err := db.Exec(context.Background(), `
 		CREATE TABLE IF NOT EXISTS vulnobs_assets (
 			tenant_id TEXT NOT NULL,
 			asset TEXT NOT NULL,
 			source TEXT NOT NULL,
+			last_scanned TIMESTAMPTZ NOT NULL,
 			posture JSONB NOT NULL,
 			PRIMARY KEY (tenant_id, asset)
 		)
 	`); err != nil {
 		return nil, err
 	}
-	s := &server{db: db}
+	for _, query := range []string{
+		`ALTER TABLE vulnobs_assets ADD COLUMN IF NOT EXISTS last_scanned TIMESTAMPTZ`,
+		`UPDATE vulnobs_assets SET last_scanned = COALESCE(NULLIF(posture->>'lastScanned', '')::timestamptz, NOW()) WHERE last_scanned IS NULL`,
+		`ALTER TABLE vulnobs_assets ALTER COLUMN last_scanned SET NOT NULL`,
+	} {
+		if _, err := db.Exec(context.Background(), query); err != nil {
+			return nil, err
+		}
+	}
+	s := &server{db: db, signingKey: signingKey}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.Handle("GET /v1/health", s.authenticate(http.HandlerFunc(s.health)))
@@ -66,14 +99,82 @@ type tenantKey struct{}
 
 func (s *server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-		if len(token) < 32 || token == r.Header.Get("Authorization") {
+		authorization := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authorization, "Bearer ") {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		hash := sha256.Sum256([]byte(token))
-		next.ServeHTTP(w, r.WithContext(contextWithTenant(r, hex.EncodeToString(hash[:]))))
+		tenant, err := verifyToken(strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer ")), s.signingKey)
+		if err != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(contextWithTenant(r, tenant)))
 	})
+}
+
+type tokenClaims struct {
+	TenantID string `json:"tenant"`
+	Expires  int64  `json:"exp"`
+}
+
+func verifyToken(token string, signingKey []byte) (string, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] != "v1" {
+		return "", errors.New("invalid token format")
+	}
+	unsigned := parts[0] + "." + parts[1]
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return "", errors.New("invalid token signature")
+	}
+	mac := hmac.New(sha256.New, signingKey)
+	_, _ = mac.Write([]byte(unsigned))
+	if !hmac.Equal(signature, mac.Sum(nil)) {
+		return "", errors.New("invalid token signature")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", errors.New("invalid token payload")
+	}
+	var claims tokenClaims
+	if err := json.Unmarshal(payload, &claims); err != nil || !validTenantID(claims.TenantID) {
+		return "", errors.New("invalid token claims")
+	}
+	if claims.Expires <= time.Now().Unix() {
+		return "", errors.New("token expired")
+	}
+	return claims.TenantID, nil
+}
+
+func validTenantID(tenantID string) bool {
+	if len(tenantID) == 0 || len(tenantID) > 128 {
+		return false
+	}
+	for i, char := range tenantID {
+		valid := char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9'
+		if i == 0 {
+			if !valid {
+				return false
+			}
+			continue
+		}
+		if !valid && char != '.' && char != '_' && char != ':' && char != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func PurgeExpired(ctx context.Context, db *pgxpool.Pool, retention time.Duration) (int64, error) {
+	if retention <= 0 {
+		return 0, errors.New("retention must be positive")
+	}
+	result, err := db.Exec(ctx, `DELETE FROM vulnobs_assets WHERE last_scanned < $1`, time.Now().UTC().Add(-retention))
+	if err != nil {
+		return 0, fmt.Errorf("delete expired assets: %w", err)
+	}
+	return result.RowsAffected(), nil
 }
 
 func (s *server) assets(w http.ResponseWriter, r *http.Request) {
@@ -110,8 +211,9 @@ func (s *server) assets(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "asset is required", http.StatusBadRequest)
 			return
 		}
-		if p.LastScanned.IsZero() {
-			p.LastScanned = time.Now().UTC()
+		if p.LastScanned.IsZero() || p.LastScanned.After(time.Now().UTC().Add(5*time.Minute)) {
+			http.Error(w, "lastScanned must be a valid timestamp no more than 5 minutes in the future", http.StatusBadRequest)
+			return
 		}
 		encoded, err := json.Marshal(p)
 		if err != nil {
@@ -119,11 +221,11 @@ func (s *server) assets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, err = s.db.Exec(r.Context(), `
-			INSERT INTO vulnobs_assets (tenant_id, asset, source, posture)
-			VALUES ($1, $2, $3, $4)
+			INSERT INTO vulnobs_assets (tenant_id, asset, source, last_scanned, posture)
+			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (tenant_id, asset) DO UPDATE
-			SET source=EXCLUDED.source, posture=EXCLUDED.posture
-		`, tenant, p.Asset, p.Source, encoded)
+			SET source=EXCLUDED.source, last_scanned=EXCLUDED.last_scanned, posture=EXCLUDED.posture
+		`, tenant, p.Asset, p.Source, p.LastScanned, encoded)
 		if err != nil {
 			http.Error(w, "storage write failed", http.StatusInternalServerError)
 			return
