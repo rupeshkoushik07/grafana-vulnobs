@@ -34,7 +34,7 @@ Once the logs settle (10–20 seconds):
 4. Push a report the way a scanner would, then open **More apps → Vulnobs → Assets**:
 
    ```bash
-   curl -u admin:admin -X POST "http://localhost:3000/api/plugins/rupesh-vulnobs-app/resources/ingest?asset=payments-api" \
+   curl -u admin:admin -X POST "http://localhost:3000/api/plugins/daringdogwood2354-vulnobs-app/resources/ingest?asset=payments-api" \
      -H "Content-Type: application/json" --data-binary @examples/cyclonedx-payments-api.json
    ```
 

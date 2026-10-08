@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
   "type": "datasource",
   "name": "Vulnobs",
-  "id": "rupesh-vulnobs-datasource",
+  "id": "daringdogwood2354-vulnobs-datasource",
   "metrics": true,
   "backend": true,
   "executable": "gpx_vulnobs",
@@ -13,7 +13,14 @@
       "name": "Rupesh Punna",
       "url": "https://github.com/rupeshkoushik07"
     },
-    "keywords": ["datasource", "security", "vulnerability", "cve", "osv", "observability"],
+    "keywords": [
+      "datasource",
+      "security",
+      "vulnerability",
+      "cve",
+      "osv",
+      "observability"
+    ],
     "logos": {
       "small": "img/logo.svg",
       "large": "img/logo.svg"

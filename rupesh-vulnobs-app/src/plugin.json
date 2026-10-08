@@ -2,12 +2,19 @@
   "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
   "type": "app",
   "name": "Vulnobs",
-  "id": "rupesh-vulnobs-app",
+  "id": "daringdogwood2354-vulnobs-app",
   "backend": true,
   "executable": "gpx_vulnobs",
   "info": {
-    "keywords": ["app", "security", "vulnerability", "cve", "osv", "observability"],
-    "description": "Vulnerability observability in Grafana — search public CVE feeds (OSV) and see which vulnerabilities affect your scanned containers and repositories.",
+    "keywords": [
+      "app",
+      "security",
+      "vulnerability",
+      "cve",
+      "osv",
+      "observability"
+    ],
+    "description": "Vulnerability observability in Grafana \u2014 search public CVE feeds (OSV) and see which vulnerabilities affect your scanned containers and repositories.",
     "author": {
       "name": "Rupesh Punna",
       "url": "https://github.com/rupeshkoushik07"

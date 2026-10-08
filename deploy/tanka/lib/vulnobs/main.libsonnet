@@ -7,7 +7,7 @@
 {
   new(params):: {
     local ns = params.namespace,
-    local appID = 'rupesh-vulnobs-app',
+    local appID = 'daringdogwood2354-vulnobs-app',
     local image = '%s:%s' % [params.imageRepository, params.imageTag],
     local appAPI = 'http://grafana.%s.svc:3000/api/plugins/%s/resources' % [ns, appID],
 
