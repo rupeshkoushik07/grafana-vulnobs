@@ -86,7 +86,7 @@ jobs:
             kubectl -n vulnobs logs "job/$1" --all-containers --prefix
             [ "$(kubectl -n vulnobs get job "$1" -o jsonpath='{.status.succeeded}')" = 1 ]
           }
-          assets() { curl -fsS "$G/api/plugins/rupesh-vulnobs-app/resources/assets"; }
+          assets() { curl -fsS "$G/api/plugins/daringdogwood2354-vulnobs-app/resources/assets"; }
           EOF
 
       - name: Deploy with Tanka
@@ -112,8 +112,8 @@ jobs:
           done
 
           echo "The app is enabled, has the Assets page, and saves scans to disk:"
-          curl -fsS "$G/api/plugins/rupesh-vulnobs-app/settings" | jq -e '.enabled == true and any(.includes[]; .name == "Assets")'
-          curl -fsS "$G/api/plugins/rupesh-vulnobs-app/health" | jq -e '.message | test("saved in /var/lib/grafana/vulnobs")'
+          curl -fsS "$G/api/plugins/daringdogwood2354-vulnobs-app/settings" | jq -e '.enabled == true and any(.includes[]; .name == "Assets")'
+          curl -fsS "$G/api/plugins/daringdogwood2354-vulnobs-app/health" | jq -e '.message | test("saved in /var/lib/grafana/vulnobs")'
 
           echo "The provisioned data source reaches OSV and can read ingested assets:"
           curl -fsS "$G/api/datasources/uid/vulnobs-osv/health" | jq -e '.status == "OK"'
