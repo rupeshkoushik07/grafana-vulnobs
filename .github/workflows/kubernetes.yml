@@ -63,6 +63,32 @@ jobs:
       - name: Install Tanka
         run: go install "github.com/grafana/tanka/cmd/tk@${TANKA_VERSION}"
 
+      - name: Prepare PostgreSQL and storage credentials
+        run: |
+          kubectl create namespace vulnobs
+          kubectl -n vulnobs create deployment postgres \
+            --image=postgres:17-alpine \
+            --port=5432
+          kubectl -n vulnobs set env deployment/postgres \
+            POSTGRES_DB=vulnobs \
+            POSTGRES_USER=vulnobs \
+            POSTGRES_PASSWORD=vulnobs-test
+          kubectl -n vulnobs expose deployment postgres --port=5432
+          kubectl -n vulnobs rollout status deployment/postgres --timeout=5m
+          for _ in $(seq 1 60); do
+            if kubectl -n vulnobs exec deployment/postgres -- psql -U vulnobs -d vulnobs -c 'SELECT 1' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          kubectl -n vulnobs exec deployment/postgres -- psql -U vulnobs -d vulnobs -v ON_ERROR_STOP=1 -c "CREATE TABLE vulnobs_assets (tenant_id TEXT NOT NULL, asset TEXT NOT NULL, source TEXT NOT NULL, posture JSONB NOT NULL, PRIMARY KEY (tenant_id, asset)); INSERT INTO vulnobs_assets (tenant_id, asset, source, posture) VALUES ('ci', 'expired-fixture', 'cluster', '{\"asset\":\"expired-fixture\",\"source\":\"cluster\",\"lastScanned\":\"2024-01-01T00:00:00Z\",\"counts\":{},\"kev\":0,\"total\":0}');"
+          signing_key="$(openssl rand -hex 32)"
+          storage_token="$(VULNOBS_TOKEN_SIGNING_KEY="$signing_key" python3 tools/create-storage-token.py --tenant-id ci --lifetime-days 1)"
+          kubectl -n vulnobs create secret generic vulnobs-storage \
+            --from-literal=database-url='postgres://vulnobs:vulnobs-test@postgres:5432/vulnobs?sslmode=disable' \
+            --from-literal=token-signing-key="$signing_key" \
+            --from-literal=storage-token="$storage_token"
+
       - name: Write test helpers
         run: |
           cat > "$RUNNER_TEMP/grafana.sh" <<'EOF'
@@ -97,7 +123,10 @@ jobs:
           tk apply environments/default --auto-approve always \
             --tla-str imageRepository=vulnobs \
             --tla-str imageTag=ci
+          kubectl -n vulnobs rollout status deployment/vulnobs-storage --timeout=5m
           kubectl -n vulnobs rollout status deployment/grafana --timeout=5m
+          expired_records=$(kubectl -n vulnobs exec deployment/postgres -- psql -At -U vulnobs -d vulnobs -c "SELECT count(*) FROM vulnobs_assets WHERE tenant_id='ci' AND asset='expired-fixture'")
+          test "$expired_records" = 0
 
       - name: Check plugins and provisioning
         env:
@@ -109,10 +138,10 @@ jobs:
           echo "The bundled app is loaded:"
           curl -fsS "$G/api/plugins/rupeshkoushik07-vulnobs-app/settings" | jq -c '{id, signature, version: .info.version}'
 
-          echo "The app is enabled, has the Assets page, and saves scans to disk:"
+          echo "The app is enabled, has the Assets page, and reaches persistent storage:"
           curl -fsS "$G/api/plugins/rupeshkoushik07-vulnobs-app/settings" \
             | jq -e '.enabled == true and any(.includes[]; .name == "Assets") and any(.includes[]; .type == "datasource" and .path == "datasource/plugin.json")'
-          curl -fsS "$G/api/plugins/rupeshkoushik07-vulnobs-app/health" | jq -e '.message | test("saved in /var/lib/grafana/vulnobs")'
+          curl -fsS "$G/api/plugins/rupeshkoushik07-vulnobs-app/health" | jq -e '.message | test("Connected to the authenticated storage API")'
 
           echo "The nested, native data source reaches OSV and can read ingested assets:"
           curl -fsS "$G/api/datasources/uid/vulnobs-osv/health" | jq -e '.status == "OK"'
@@ -190,7 +219,8 @@ jobs:
         run: |
           kubectl get pods -A
           kubectl -n vulnobs describe pods
-          kubectl -n vulnobs logs deployment/grafana --tail=300
+          kubectl -n vulnobs logs deployment/postgres --tail=200 || true
+          kubectl -n vulnobs logs deployment/grafana --tail=300 || true
           for job in scan-ci scan-ci-2; do
             kubectl -n vulnobs logs "job/$job" --all-containers --prefix --tail=200 || true
           done

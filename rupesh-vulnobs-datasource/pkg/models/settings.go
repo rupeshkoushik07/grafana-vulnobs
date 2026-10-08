@@ -11,18 +11,13 @@ import (
 const DefaultOsvBaseURL = "https://api.osv.dev"
 
 type PluginSettings struct {
-	// OsvBaseURL is the base URL of the OSV API. Defaults to DefaultOsvBaseURL.
-	OsvBaseURL string `json:"osvBaseUrl"`
-	// AssetsDataDir is the Vulnobs app's data directory (its dataDir setting).
-	// "Ingested assets" queries read the scans the app saved there.
-	AssetsDataDir string                `json:"assetsDataDir"`
-	Secrets       *SecretPluginSettings `json:"-"`
+	StorageURL string                `json:"storageUrl"`
+	Secrets    *SecretPluginSettings `json:"-"`
 }
 
 type SecretPluginSettings struct {
-	// ApiKey is reserved for enrichment feeds (NVD / GitHub Advisory) in a later
-	// phase. OSV itself requires no authentication.
-	ApiKey string `json:"apiKey"`
+	StorageToken string `json:"storageToken"`
+	ApiKey       string `json:"apiKey"`
 }
 
 func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSettings, error) {
@@ -33,10 +28,6 @@ func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSetti
 		}
 	}
 
-	if settings.OsvBaseURL == "" {
-		settings.OsvBaseURL = DefaultOsvBaseURL
-	}
-
 	settings.Secrets = loadSecretPluginSettings(source.DecryptedSecureJSONData)
 
 	return &settings, nil
@@ -44,6 +35,7 @@ func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSetti
 
 func loadSecretPluginSettings(source map[string]string) *SecretPluginSettings {
 	return &SecretPluginSettings{
-		ApiKey: source["apiKey"],
+		StorageToken: source["storageToken"],
+		ApiKey:       source["apiKey"],
 	}
 }

@@ -39,8 +39,18 @@ COPY rupesh-vulnobs-app/ rupesh-vulnobs-app/
 COPY rupesh-vulnobs-datasource/ rupesh-vulnobs-datasource/
 WORKDIR /src/rupesh-vulnobs-app
 RUN mage -v "$(cat /mage-target)"
-# The scan CronJob's helper that lists the images running in the cluster.
+# The scan CronJob helper is built from its own module, outside the Grafana
+# plugin source tree.
+WORKDIR /src/scanner
+COPY scanner/go.mod ./
+COPY scanner/ ./
 RUN GOOS=linux GOARCH="$TARGETARCH" go build -trimpath -ldflags="-s -w" -o /out/vulnobs-discover ./cmd/vulnobs-discover
+# The shared asset storage API is a separate service from the Grafana plugin.
+WORKDIR /src/storage-api
+COPY storage-api/go.mod storage-api/go.sum ./
+RUN go mod download
+COPY storage-api/ ./
+RUN GOOS=linux GOARCH="$TARGETARCH" go build -trimpath -ldflags="-s -w" -o /out/vulnobs-storage ./cmd/vulnobs-storage
 WORKDIR /src/rupesh-vulnobs-datasource
 RUN mage -v "$(cat /mage-target)"
 
@@ -54,6 +64,7 @@ COPY --from=backend /src/rupesh-vulnobs-datasource/dist/gpx_vulnobs_* /rupeshkou
 FROM scratch AS artifacts
 COPY --from=plugins / /plugins/
 COPY --from=backend /out/vulnobs-discover /bin/vulnobs-discover
+COPY --from=backend /out/vulnobs-storage /bin/vulnobs-storage
 
 # --- Runtime ---
 FROM grafana/grafana:13.2.1@sha256:f772d434e8fab0049deb2b1b30abd43342bcfca1537614aa8d36080232cf4283
@@ -65,9 +76,9 @@ ENV GF_PATHS_PLUGINS=/usr/share/grafana/plugins-vulnobs \
     GF_PLUGINS_PREINSTALL_DISABLED=true
 COPY --from=plugins / /usr/share/grafana/plugins-vulnobs/
 COPY --from=backend /out/vulnobs-discover /usr/local/bin/vulnobs-discover
-# Provision the nested data source, the demo dashboard, the app (saving ingested scans
-# under /var/lib/grafana/vulnobs) and an alert rule for actively exploited
-# vulnerabilities, so a plain `docker run` gives a working stack.
+COPY --from=backend /out/vulnobs-storage /usr/local/bin/vulnobs-storage
+# Provision the nested data source, the demo dashboard, the app, and an alert
+# rule for actively exploited vulnerabilities.
 COPY image/provisioning/datasources/vulnobs.yaml /etc/grafana/provisioning/datasources/vulnobs.yaml
 COPY rupesh-vulnobs-datasource/provisioning/dashboards/ /etc/grafana/provisioning/dashboards/
 COPY image/provisioning/plugins/apps.yaml /etc/grafana/provisioning/plugins/vulnobs.yaml

@@ -159,7 +159,16 @@ func (a *App) handleIngest(w http.ResponseWriter, req *http.Request) {
 
 	rows := a.scanPackages(req.Context(), pkgs)
 	a.enrichRows(req.Context(), rows)
-	posture, err := a.store.put(asset, source, format, splitList(q.Get("namespaces")), rows)
+	if a.storeErr != nil {
+		writeError(w, http.StatusServiceUnavailable, "authenticated storage API is not configured")
+		return
+	}
+	posture, err := a.store.put(req.Context(), asset, source, format, splitList(q.Get("namespaces")), rows)
+	if err != nil {
+		backend.Logger.Error("Could not persist ingested scan", "asset", asset, "error", err)
+		writeError(w, http.StatusBadGateway, "could not persist ingested scan")
+		return
+	}
 
 	resp := map[string]any{
 		"asset":       posture.Asset,
@@ -170,28 +179,36 @@ func (a *App) handleIngest(w http.ResponseWriter, req *http.Request) {
 		"counts":      posture.Counts,
 		"lastScanned": posture.LastScanned,
 	}
-	if err != nil {
-		backend.Logger.Warn("Ingested scan kept in memory but not saved to disk", "asset", asset, "error", err)
-		resp["warning"] = "kept in memory but not saved to disk: " + err.Error()
-	}
 	writeJSON(w, resp)
 }
 
 // handleAssets returns the current posture of every ingested asset (summary only).
-func (a *App) handleAssets(w http.ResponseWriter, _ *http.Request) {
-	persistent, dir := a.store.persistent()
-	storage := map[string]any{"persistent": persistent}
-	if persistent {
-		storage["dataDir"] = dir
+func (a *App) handleAssets(w http.ResponseWriter, req *http.Request) {
+	if a.storeErr != nil {
+		writeError(w, http.StatusServiceUnavailable, "authenticated storage API is not configured")
+		return
 	}
-	writeJSON(w, map[string]any{"assets": a.store.list(), "storage": storage})
+	assets, err := a.store.list(req.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "could not read ingested assets")
+		return
+	}
+	writeJSON(w, map[string]any{"assets": assets, "storage": map[string]any{"persistent": true, "backend": "authenticated-api"}})
 }
 
 // handleAsset returns the full posture (including per-vulnerability rows) for one
 // asset: GET /resources/asset?name=<name>
 func (a *App) handleAsset(w http.ResponseWriter, req *http.Request) {
+	if a.storeErr != nil {
+		writeError(w, http.StatusServiceUnavailable, "authenticated storage API is not configured")
+		return
+	}
 	name := strings.TrimSpace(req.URL.Query().Get("name"))
-	p, ok := a.store.get(name)
+	p, ok, err := a.store.get(req.Context(), name)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "could not read ingested asset")
+		return
+	}
 	if !ok {
 		writeError(w, http.StatusNotFound, "no posture stored for that asset")
 		return
@@ -220,9 +237,13 @@ func (a *App) handlePrune(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "'source' is required, so only that source's assets are pruned")
 		return
 	}
-	removed, err := a.store.prune(body.Source, body.Keep)
+	if a.storeErr != nil {
+		writeError(w, http.StatusServiceUnavailable, "authenticated storage API is not configured")
+		return
+	}
+	removed, err := a.store.prune(req.Context(), body.Source, body.Keep)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusBadGateway, "could not prune ingested assets")
 		return
 	}
 	writeJSON(w, map[string]any{"removed": removed})

@@ -1,100 +1,116 @@
 package plugin
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io"
+	"net/http"
+	"net/url"
 	"sort"
-	"sync"
+	"strings"
 	"time"
 )
 
-// AssetPosture is the latest vulnerability posture for one scanned asset
-// (an image, deployment, or repo).
+// AssetPosture is the latest vulnerability posture for one scanned asset.
 type AssetPosture struct {
 	Asset       string         `json:"asset"`
-	Source      string         `json:"source"`               // who pushed it, e.g. "cluster" for the scan CronJob
-	Namespaces  []string       `json:"namespaces,omitempty"` // where the image runs, for cluster scans
+	Source      string         `json:"source"`
+	Namespaces  []string       `json:"namespaces,omitempty"`
 	Format      string         `json:"format"`
 	LastScanned time.Time      `json:"lastScanned"`
-	Counts      map[string]int `json:"counts"` // severity -> count
-	KEV         int            `json:"kev"`    // actively exploited (CISA KEV) findings
+	Counts      map[string]int `json:"counts"`
+	KEV         int            `json:"kev"`
 	Total       int            `json:"total"`
 	Rows        []ScanRow      `json:"rows,omitempty"`
 }
 
-// storeFileName is the asset store's file inside the data directory. The
-// Vulnobs data source reads the same file (rupesh-vulnobs-datasource
-// pkg/plugin/assets.go) to serve dashboards and alert rules, so keep the format
-// compatible.
-const storeFileName = "assets.json"
-
-type storeFile struct {
-	Version int             `json:"version"`
-	Assets  []*AssetPosture `json:"assets"`
-}
-
-// assetStore keeps the most recent posture per asset. With a data directory it
-// also writes every change to disk, so postures survive restarts; without one
-// it only keeps them in memory.
-//
-// Grafana creates one app instance per organization, and instances configured
-// with the same directory share one file. Give each organization its own
-// directory if more than one ingests scans.
 type assetStore struct {
-	mu     sync.RWMutex
-	assets map[string]*AssetPosture
-	path   string // "" keeps assets in memory only
+	baseURL string
+	token   string
+	client  *http.Client
 }
 
-// newAssetStore opens the store in dir, loading any saved postures. An empty
-// dir gives a memory-only store. On error the store is still usable: it falls
-// back to memory if dir can't be created, and starts empty (and overwrites the
-// file on the next change) if the saved file can't be read.
-func newAssetStore(dir string) (*assetStore, error) {
-	s := &assetStore{assets: map[string]*AssetPosture{}}
-	if dir == "" {
-		return s, nil
-	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return s, fmt.Errorf("create data directory: %w", err)
-	}
-	s.path = filepath.Join(dir, storeFileName)
+type storageHTTPError struct {
+	status int
+}
 
-	raw, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return s, nil
+func (e storageHTTPError) Error() string { return http.StatusText(e.status) }
+
+func newAssetStore(baseURL, token string, client *http.Client) (*assetStore, error) {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("storage API URL must be an absolute HTTP or HTTPS URL without credentials, query, or fragment")
 	}
-	if err != nil {
-		return s, fmt.Errorf("read %s: %w", s.path, err)
+	if len(strings.TrimSpace(token)) < 32 {
+		return nil, errors.New("storage API token must contain at least 32 characters")
 	}
-	var f storeFile
-	if err := json.Unmarshal(raw, &f); err != nil {
-		return s, fmt.Errorf("parse %s: %w", s.path, err)
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	for _, a := range f.Assets {
-		if a != nil && a.Asset != "" {
-			s.assets[a.Asset] = a
+	return &assetStore{baseURL: strings.TrimRight(parsed.String(), "/"), token: token, client: client}, nil
+}
+
+func (s *assetStore) request(ctx context.Context, method, path string, body any, target any) error {
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return err
 		}
+		reader = bytes.NewReader(encoded)
 	}
-	return s, nil
+	req, err := http.NewRequestWithContext(ctx, method, s.baseURL+path, reader)
+	if err != nil {
+		return fmt.Errorf("create storage request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("storage API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return storageHTTPError{status: resp.StatusCode}
+	}
+	if target == nil {
+		return nil
+	}
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		return fmt.Errorf("decode storage API response: %w", err)
+	}
+	return nil
 }
 
-// persistent reports whether changes are written to disk, and where.
-func (s *assetStore) persistent() (bool, string) {
-	return s.path != "", filepath.Dir(s.path)
+func (s *assetStore) check(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/v1/health", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("storage API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("storage API returned %s", resp.Status)
+	}
+	return nil
 }
 
-// put replaces the stored posture for an asset with the latest scan. The
-// posture is stored even if saving it to disk fails; the error says so.
-func (s *assetStore) put(name, source, format string, namespaces []string, rows []ScanRow) (*AssetPosture, error) {
+func (s *assetStore) put(ctx context.Context, name, source, format string, namespaces []string, rows []ScanRow) (*AssetPosture, error) {
 	counts := map[string]int{}
 	kev := 0
-	for _, r := range rows {
-		counts[r.Severity]++
-		if r.KEV {
+	for _, row := range rows {
+		counts[row.Severity]++
+		if row.KEV {
 			kev++
 		}
 	}
@@ -109,89 +125,35 @@ func (s *assetStore) put(name, source, format string, namespaces []string, rows 
 		Total:       len(rows),
 		Rows:        rows,
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.assets[name] = p
-	return p, s.saveLocked()
+	if err := s.request(ctx, http.MethodPut, "/v1/assets", p, nil); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
-// prune removes assets pushed by source that are not in keep, and returns
-// their names. Assets from other sources are left alone.
-func (s *assetStore) prune(source string, keep []string) ([]string, error) {
-	keepSet := make(map[string]bool, len(keep))
-	for _, k := range keep {
-		keepSet[k] = true
+func (s *assetStore) prune(ctx context.Context, source string, keep []string) ([]string, error) {
+	var result struct {
+		Removed []string `json:"removed"`
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	removed := []string{}
-	for name, a := range s.assets {
-		if a.Source == source && !keepSet[name] {
-			delete(s.assets, name)
-			removed = append(removed, name)
-		}
+	if err := s.request(ctx, http.MethodPost, "/v1/assets/prune", map[string]any{"source": source, "keep": keep}, &result); err != nil {
+		return nil, err
 	}
-	sort.Strings(removed)
-	if len(removed) == 0 {
-		return removed, nil
-	}
-	return removed, s.saveLocked()
+	sort.Strings(result.Removed)
+	return result.Removed, nil
 }
 
-// saveLocked writes all assets to disk atomically: a temporary file in the
-// same directory, renamed over the old one. The caller holds s.mu.
-func (s *assetStore) saveLocked() error {
-	if s.path == "" {
-		return nil
+func (s *assetStore) list(ctx context.Context) ([]*AssetPosture, error) {
+	var result struct {
+		Assets []*AssetPosture `json:"assets"`
 	}
-	f := storeFile{Version: 1, Assets: make([]*AssetPosture, 0, len(s.assets))}
-	for _, a := range s.assets {
-		f.Assets = append(f.Assets, a)
+	if err := s.request(ctx, http.MethodGet, "/v1/assets", nil, &result); err != nil {
+		return nil, err
 	}
-	sort.Slice(f.Assets, func(i, j int) bool { return f.Assets[i].Asset < f.Assets[j].Asset })
-	raw, err := json.Marshal(f)
-	if err != nil {
-		return err
+	for _, asset := range result.Assets {
+		asset.Rows = nil
 	}
-
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".assets-*.json")
-	if err != nil {
-		return fmt.Errorf("save assets: %w", err)
-	}
-	defer os.Remove(tmp.Name()) // no-op once renamed
-	if _, err := tmp.Write(raw); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("save assets: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("save assets: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("save assets: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), s.path); err != nil {
-		return fmt.Errorf("save assets: %w", err)
-	}
-	return nil
-}
-
-// list returns all assets without their per-row detail, most urgent first:
-// actively exploited findings, then critical, then high, then total.
-func (s *assetStore) list() []*AssetPosture {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	out := make([]*AssetPosture, 0, len(s.assets))
-	for _, a := range s.assets {
-		summary := *a
-		summary.Rows = nil
-		out = append(out, &summary)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i], out[j]
+	sort.Slice(result.Assets, func(i, j int) bool {
+		a, b := result.Assets[i], result.Assets[j]
 		switch {
 		case a.KEV != b.KEV:
 			return a.KEV > b.KEV
@@ -205,13 +167,18 @@ func (s *assetStore) list() []*AssetPosture {
 			return a.Asset < b.Asset
 		}
 	})
-	return out
+	return result.Assets, nil
 }
 
-// get returns the full posture (with rows) for one asset.
-func (s *assetStore) get(name string) (*AssetPosture, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	a, ok := s.assets[name]
-	return a, ok
+func (s *assetStore) get(ctx context.Context, name string) (*AssetPosture, bool, error) {
+	var p AssetPosture
+	err := s.request(ctx, http.MethodPost, "/v1/assets/get", map[string]string{"asset": name}, &p)
+	if err != nil {
+		var statusError storageHTTPError
+		if errors.As(err, &statusError) && statusError.status == http.StatusNotFound {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return &p, true, nil
 }

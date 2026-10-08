@@ -28,15 +28,14 @@ export const DEFAULT_QUERY: Partial<MyQuery> = {
  * Options configured for each DataSource instance
  */
 export interface MyDataSourceOptions extends DataSourceJsonData {
-  osvBaseUrl?: string;
-  // The Vulnobs app's data directory, where it saves ingested scans.
-  assetsDataDir?: string;
+  storageUrl?: string;
 }
 
 /**
  * Value that is used in the backend, but never sent over HTTP to the frontend.
- * Reserved for enrichment feeds (NVD / GitHub Advisory) in a later phase.
+ * Storage API credentials are never sent to the frontend.
  */
 export interface MySecureJsonData {
+  storageToken?: string;
   apiKey?: string;
 }

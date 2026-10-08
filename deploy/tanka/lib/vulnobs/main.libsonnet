@@ -18,7 +18,7 @@
     },
 
     grafana: {
-      // Grafana's data directory: its database, and the scans the app ingests.
+      // Grafana's database and plugin state; scan posture lives in PostgreSQL.
       pvc: {
         apiVersion: 'v1',
         kind: 'PersistentVolumeClaim',
@@ -51,6 +51,10 @@
                   { name: 'GF_AUTH_ANONYMOUS_ENABLED', value: 'true' },
                   { name: 'GF_AUTH_ANONYMOUS_ORG_ROLE', value: 'Editor' },
                   { name: 'GF_SECURITY_ADMIN_PASSWORD', value: params.adminPassword },
+                  {
+                    name: 'VULNOBS_STORAGE_TOKEN',
+                    valueFrom: { secretKeyRef: { name: 'vulnobs-storage', key: 'storage-token' } },
+                  },
                 ],
                 volumeMounts: [{ name: 'data', mountPath: '/var/lib/grafana' }],
                 readinessProbe: { httpGet: { path: '/api/health', port: 3000 }, initialDelaySeconds: 10 },
@@ -68,6 +72,50 @@
         spec: {
           selector: { app: 'grafana' },
           ports: [{ name: 'http', port: 3000, targetPort: 3000 }],
+        },
+      },
+    },
+
+    storageAPI: {
+      deployment: {
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: { name: 'vulnobs-storage', namespace: ns, labels: { app: 'vulnobs-storage' } },
+        spec: {
+          replicas: 1,
+          selector: { matchLabels: { app: 'vulnobs-storage' } },
+          template: {
+            metadata: { labels: { app: 'vulnobs-storage' } },
+            spec: {
+              containers: [{
+                name: 'storage-api',
+                image: image,
+                command: ['/usr/local/bin/vulnobs-storage'],
+                ports: [{ containerPort: 8080, name: 'http' }],
+                env: [{
+                  name: 'DATABASE_URL',
+                  valueFrom: { secretKeyRef: { name: 'vulnobs-storage', key: 'database-url' } },
+                }, {
+                  name: 'VULNOBS_TOKEN_SIGNING_KEY',
+                  valueFrom: { secretKeyRef: { name: 'vulnobs-storage', key: 'token-signing-key' } },
+                }, {
+                  name: 'VULNOBS_RETENTION_DAYS',
+                  value: std.toString(params.storageRetentionDays),
+                }],
+                readinessProbe: { httpGet: { path: '/healthz', port: 8080 }, initialDelaySeconds: 5 },
+              }],
+            },
+          },
+        },
+      },
+
+      service: {
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: { name: 'vulnobs-storage', namespace: ns },
+        spec: {
+          selector: { app: 'vulnobs-storage' },
+          ports: [{ name: 'http', port: 8080, targetPort: 8080 }],
         },
       },
     },

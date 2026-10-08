@@ -6,6 +6,6 @@ apps:
     org_name: 'rupesh'
     disabled: false
     jsonData:
-      apiUrl: http://default-url.com
+      storageUrl: http://storage:8080
     secureJsonData:
-      apiKey: secret-key
+      storageToken: '$VULNOBS_STORAGE_TOKEN'

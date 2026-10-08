@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -101,11 +102,14 @@ func (a *App) osvQueryPackage(ctx context.Context, ecosystem, pkg, version strin
 
 // osvGetVuln fetches a single vulnerability by its id (OSV, GHSA or CVE id).
 func (a *App) osvGetVuln(ctx context.Context, id string) (*osvVuln, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.baseURL+"/v1/vulns/"+id, nil)
+	if id == "" || strings.ContainsAny(id, "/\\?#%") {
+		return nil, fmt.Errorf("invalid vulnerability id %q", id)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.baseURL+"/v1/vulns/"+url.PathEscape(id), nil) // #nosec G704 -- fixed OSV host, escaped ID, and redirects are disabled.
 	if err != nil {
 		return nil, err
 	}
-	resp, err := a.httpClient.Do(req)
+	resp, err := a.httpClient.Do(req) // #nosec G704 -- request authority is the fixed OSV host; redirects are disabled.
 	if err != nil {
 		return nil, err
 	}

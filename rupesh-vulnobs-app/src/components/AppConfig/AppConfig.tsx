@@ -7,16 +7,13 @@ import { Button, Field, FieldSet, Input, SecretInput, useStyles2 } from '@grafan
 import { testIds } from '../testIds';
 
 type AppPluginSettings = {
-  apiUrl?: string;
+  storageUrl?: string;
 };
 
 type State = {
-  // The URL to reach our custom API.
-  apiUrl: string;
-  // Tells us if the API key secret is set.
-  isApiKeySet: boolean;
-  // A secret key for our custom API.
-  apiKey: string;
+  storageUrl: string;
+  storageToken: string;
+  isStorageTokenSet: boolean;
 };
 
 export interface AppConfigProps extends PluginConfigPageProps<AppPluginMeta<AppPluginSettings>> {}
@@ -25,18 +22,18 @@ const AppConfig = ({ plugin }: AppConfigProps) => {
   const s = useStyles2(getStyles);
   const { enabled, pinned, jsonData, secureJsonFields } = plugin.meta;
   const [state, setState] = useState<State>({
-    apiUrl: jsonData?.apiUrl || '',
-    apiKey: '',
-    isApiKeySet: Boolean(secureJsonFields?.apiKey),
+    storageUrl: jsonData?.storageUrl || '',
+    storageToken: '',
+    isStorageTokenSet: Boolean(secureJsonFields?.storageToken),
   });
 
-  const isSubmitDisabled = Boolean(!state.apiUrl || (!state.isApiKeySet && !state.apiKey));
+  const isSubmitDisabled = Boolean(!state.storageUrl || (!state.isStorageTokenSet && !state.storageToken));
 
-  const onResetApiKey = () =>
+  const onResetStorageToken = () =>
     setState({
       ...state,
-      apiKey: '',
-      isApiKeySet: false,
+      storageToken: '',
+      isStorageTokenSet: false,
     });
 
   const onChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -46,7 +43,8 @@ const AppConfig = ({ plugin }: AppConfigProps) => {
     });
   };
 
-  const onSubmit = () => {
+  const onSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
     if (isSubmitDisabled) {
       return;
     }
@@ -55,50 +53,42 @@ const AppConfig = ({ plugin }: AppConfigProps) => {
       enabled,
       pinned,
       jsonData: {
-        apiUrl: state.apiUrl,
+        storageUrl: state.storageUrl,
       },
-      // This cannot be queried later by the frontend.
-      // We don't want to override it in case it was set previously and left untouched now.
-      secureJsonData: state.isApiKeySet
-        ? undefined
-        : {
-            apiKey: state.apiKey,
-          },
+      secureJsonData: state.isStorageTokenSet ? undefined : { storageToken: state.storageToken },
     });
   };
 
   return (
     <form onSubmit={onSubmit}>
-      <FieldSet label="API Settings">
-        <Field label="API Key" description="A secret key for authenticating to our custom API">
-          <SecretInput
-            width={60}
-            id="config-api-key"
-            data-testid={testIds.appConfig.apiKey}
-            name="apiKey"
-            value={state.apiKey}
-            isConfigured={state.isApiKeySet}
-            placeholder={'Your secret API key'}
-            onChange={onChange}
-            onReset={onResetApiKey}
-          />
-        </Field>
-
-        <Field label="API Url" description="" className={s.marginTop}>
+      <FieldSet label="Storage API">
+        <Field label="Storage API URL" description="Base URL of the Vulnobs authenticated storage service.">
           <Input
             width={60}
-            name="apiUrl"
-            id="config-api-url"
-            data-testid={testIds.appConfig.apiUrl}
-            value={state.apiUrl}
-            placeholder={`E.g.: http://mywebsite.com/api/v1`}
+            name="storageUrl"
+            id="config-storage-url"
+            data-testid={testIds.appConfig.storageUrl}
+            value={state.storageUrl}
+            placeholder="https://storage.example.com"
             onChange={onChange}
           />
         </Field>
-
+        <Field label="Storage API token" description="Stored securely by Grafana; use the same token in the Vulnobs datasource.">
+          <SecretInput
+            width={60}
+            id="config-storage-token"
+            data-testid={testIds.appConfig.storageToken}
+            name="storageToken"
+            value={state.storageToken}
+            isConfigured={state.isStorageTokenSet}
+            placeholder="A 32-character or longer token"
+            onChange={onChange}
+            onReset={onResetStorageToken}
+          />
+        </Field>
         <div className={s.marginTop}>
           <Button type="submit" data-testid={testIds.appConfig.submit} disabled={isSubmitDisabled}>
-            Save API settings
+            Save storage settings
           </Button>
         </div>
       </FieldSet>
@@ -109,9 +99,6 @@ const AppConfig = ({ plugin }: AppConfigProps) => {
 export default AppConfig;
 
 const getStyles = (theme: GrafanaTheme2) => ({
-  colorWeak: css`
-    color: ${theme.colors.text.secondary};
-  `,
   marginTop: css`
     margin-top: ${theme.spacing(3)};
   `,
@@ -120,9 +107,6 @@ const getStyles = (theme: GrafanaTheme2) => ({
 const updatePluginAndReload = async (pluginId: string, data: Partial<PluginMeta<AppPluginSettings>>) => {
   try {
     await updatePlugin(pluginId, data);
-
-    // Reloading the page as the changes made here wouldn't be propagated to the actual plugin otherwise.
-    // This is not ideal, however unfortunately currently there is no supported way for updating the plugin state.
     window.location.reload();
   } catch (e) {
     console.error('Error while updating the plugin', e);

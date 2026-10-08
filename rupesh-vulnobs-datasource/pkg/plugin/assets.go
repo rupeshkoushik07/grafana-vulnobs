@@ -1,11 +1,12 @@
 package plugin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -17,11 +18,6 @@ import (
 // OSV lookup.
 const QueryTypeAssets = "assets"
 
-// assetsFileName is the Vulnobs app's store file inside its data directory
-// (rupesh-vulnobs-app pkg/plugin/store.go).
-const assetsFileName = "assets.json"
-
-// ingestedAsset is the part of the app's stored posture this data source uses.
 type ingestedAsset struct {
 	Asset       string         `json:"asset"`
 	Source      string         `json:"source"`
@@ -32,9 +28,6 @@ type ingestedAsset struct {
 	LastScanned time.Time      `json:"lastScanned"`
 }
 
-// assetMetrics are the per-asset numbers an assets query can return. Alert rules
-// need exactly one numeric column, so a query picks one; "all" returns every
-// count, for tables.
 var assetMetrics = map[string]func(ingestedAsset) int{
 	"kev":      func(a ingestedAsset) int { return a.KEV },
 	"critical": func(a ingestedAsset) int { return a.Counts["CRITICAL"] },
@@ -47,34 +40,43 @@ var assetMetrics = map[string]func(ingestedAsset) int{
 
 var allMetrics = []string{"critical", "high", "moderate", "low", "unknown", "kev", "total"}
 
-var errAssetsNotConfigured = errors.New(
-	"set 'Assets data directory' in the data source settings to the Vulnobs app's data directory to query ingested assets")
+var errAssetsNotConfigured = errors.New("configure the authenticated storage API URL and token to query ingested assets")
 
-// loadIngestedAssets reads the app's saved scans. A missing file means nothing
-// has been ingested yet and returns no assets.
-func loadIngestedAssets(dir string) ([]ingestedAsset, error) {
-	if strings.TrimSpace(dir) == "" {
+func loadIngestedAssets(ctx context.Context, baseURL, token string, client *http.Client) ([]ingestedAsset, error) {
+	if strings.TrimSpace(baseURL) == "" || len(strings.TrimSpace(token)) < 32 {
 		return nil, errAssetsNotConfigured
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, assetsFileName))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("storage API URL must be an absolute HTTP or HTTPS URL without credentials, query, or fragment")
 	}
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(parsed.String(), "/")+"/v1/assets", nil)
 	if err != nil {
-		return nil, fmt.Errorf("read ingested assets: %w", err)
+		return nil, err
 	}
-	var f struct {
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("query authenticated storage API: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("storage API returned %s", resp.Status)
+	}
+	var result struct {
 		Assets []ingestedAsset `json:"assets"`
 	}
-	if err := json.Unmarshal(raw, &f); err != nil {
-		return nil, fmt.Errorf("parse ingested assets: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode ingested assets: %w", err)
 	}
-	sort.Slice(f.Assets, func(i, j int) bool { return f.Assets[i].Asset < f.Assets[j].Asset })
-	return f.Assets, nil
+	sort.Slice(result.Assets, func(i, j int) bool { return result.Assets[i].Asset < result.Assets[j].Asset })
+	return result.Assets, nil
 }
 
-// assetsFrame builds a table with one row per asset: string columns, which
-// alerting turns into labels, and the requested metric as the numeric column.
 func assetsFrame(assets []ingestedAsset, metric string) (*data.Frame, error) {
 	if metric == "" {
 		metric = "kev"
@@ -112,8 +114,6 @@ func assetsFrame(assets []ingestedAsset, metric string) (*data.Frame, error) {
 		}
 		frame.Fields = append(frame.Fields, data.NewField(m, nil, values[i]))
 	}
-	// A time column is fine for tables but would stop alert rules from reading
-	// the single numeric column, so only "all" includes it.
 	if metric == "all" {
 		if scanned == nil {
 			scanned = []time.Time{}

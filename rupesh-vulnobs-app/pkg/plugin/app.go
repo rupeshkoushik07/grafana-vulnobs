@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -30,18 +29,13 @@ type App struct {
 	baseURL    string
 	httpClient *http.Client
 	store      *assetStore
-	storeErr   error // why the store couldn't open its data directory, if it couldn't
+	storeErr   error
 	kev        *kevCache
 }
 
 // appSettings is the app's jsonData.
 type appSettings struct {
-	// OsvBaseURL overrides the OSV API base URL.
-	OsvBaseURL string `json:"osvBaseUrl"`
-	// DataDir is where ingested scans are saved so they survive restarts. Grafana
-	// doesn't tell plugins its data path, so this must be set; when it isn't,
-	// scans are kept in memory only.
-	DataDir string `json:"dataDir"`
+	StorageURL string `json:"storageUrl"`
 }
 
 // NewApp creates a new *App instance.
@@ -54,18 +48,16 @@ func NewApp(_ context.Context, settings backend.AppInstanceSettings) (instancemg
 	}
 
 	app := App{
-		baseURL:    DefaultOsvBaseURL,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-		kev:        newKevCache(),
+		baseURL: DefaultOsvBaseURL,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		kev: newKevCache(),
 	}
-	if cfg.OsvBaseURL != "" {
-		app.baseURL = strings.TrimRight(cfg.OsvBaseURL, "/")
-	}
-
-	app.store, app.storeErr = newAssetStore(strings.TrimSpace(cfg.DataDir))
-	if app.storeErr != nil {
-		backend.Logger.Error("Could not open the ingested scan store", "dataDir", cfg.DataDir, "error", app.storeErr)
-	}
+	app.store, app.storeErr = newAssetStore(cfg.StorageURL, settings.DecryptedSecureJSONData["storageToken"], app.httpClient)
 
 	// Use a httpadapter (provided by the SDK) for resource calls. This allows us
 	// to use a *http.ServeMux for resource calls, so we can map multiple routes
@@ -83,22 +75,22 @@ func (a *App) Dispose() {
 	// cleanup
 }
 
-// CheckHealth reports whether ingested scans are being saved to disk.
-func (a *App) CheckHealth(_ context.Context, _ *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
+// CheckHealth reports whether the authenticated storage service is reachable.
+func (a *App) CheckHealth(ctx context.Context, _ *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
 	if a.storeErr != nil {
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
 			Message: fmt.Sprintf("Ingested scan store: %v", a.storeErr),
 		}, nil
 	}
-	if persistent, dir := a.store.persistent(); persistent {
+	if err := a.store.check(ctx); err != nil {
 		return &backend.CheckHealthResult{
-			Status:  backend.HealthStatusOk,
-			Message: fmt.Sprintf("Ingested scans are saved in %s", dir),
+			Status:  backend.HealthStatusError,
+			Message: fmt.Sprintf("Authenticated storage API unavailable: %v", err),
 		}, nil
 	}
 	return &backend.CheckHealthResult{
 		Status:  backend.HealthStatusOk,
-		Message: "Ingested scans are kept in memory only; set dataDir in the app's jsonData to keep them across restarts",
+		Message: "Connected to the authenticated storage API",
 	}, nil
 }

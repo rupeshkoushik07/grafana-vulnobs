@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.2
+
+### Security and reliability
+
+- Use the authenticated VulnObs Storage API for scan findings and tenant-scoped queries.
+- Update Jest tooling and remove the webpack-only ESLint hook to drop the vulnerable `braces` dependency.
+- Keep linting enforced through `npm run lint` and CI.
+
 ## 0.1.0
 
 First release.

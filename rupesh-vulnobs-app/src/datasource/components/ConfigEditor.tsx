@@ -9,46 +9,35 @@ export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
   const { jsonData, secureJsonFields, secureJsonData } = options;
 
-  const onBaseUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const onStorageUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({
       ...options,
       jsonData: {
         ...jsonData,
-        osvBaseUrl: event.target.value,
+        storageUrl: event.target.value,
       },
     });
   };
 
-  const onAssetsDataDirChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onOptionsChange({
-      ...options,
-      jsonData: {
-        ...jsonData,
-        assetsDataDir: event.target.value,
-      },
-    });
-  };
-
-  // Secure field (only sent to the backend). Reserved for enrichment feeds.
-  const onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const onStorageTokenChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({
       ...options,
       secureJsonData: {
-        apiKey: event.target.value,
+        storageToken: event.target.value,
       },
     });
   };
 
-  const onResetAPIKey = () => {
+  const onResetStorageToken = () => {
     onOptionsChange({
       ...options,
       secureJsonFields: {
         ...options.secureJsonFields,
-        apiKey: false,
+        storageToken: false,
       },
       secureJsonData: {
         ...options.secureJsonData,
-        apiKey: '',
+        storageToken: '',
       },
     });
   };
@@ -56,50 +45,33 @@ export function ConfigEditor(props: Props) {
   return (
     <>
       <InlineField
-        label="OSV API URL"
+        label="Storage API URL"
         labelWidth={18}
         interactive
-        tooltip={'Base URL of the OSV API. Leave blank to use https://api.osv.dev'}
+        tooltip="Base URL of the authenticated Vulnobs storage API configured in the app."
       >
         <Input
-          id="config-editor-osv-url"
-          onChange={onBaseUrlChange}
-          value={jsonData.osvBaseUrl}
-          placeholder="https://api.osv.dev"
+          id="config-editor-storage-url"
+          onChange={onStorageUrlChange}
+          value={jsonData.storageUrl}
+          placeholder="https://storage.example.com"
           width={40}
         />
       </InlineField>
       <InlineField
-        label="Assets data directory"
+        label="Storage API token"
         labelWidth={18}
         interactive
-        tooltip={
-          "The Vulnobs app's data directory (its dataDir setting), for 'Ingested assets' queries and alert rules. " +
-          'Grafana must be able to read it; in the Vulnobs image it is /var/lib/grafana/vulnobs.'
-        }
-      >
-        <Input
-          id="config-editor-assets-data-dir"
-          onChange={onAssetsDataDirChange}
-          value={jsonData.assetsDataDir}
-          placeholder="/var/lib/grafana/vulnobs"
-          width={40}
-        />
-      </InlineField>
-      <InlineField
-        label="API Key (optional)"
-        labelWidth={18}
-        interactive
-        tooltip={'Reserved for NVD / GitHub Advisory enrichment (later phase). Not required for OSV.'}
+        tooltip="Use the same tenant token configured in the Vulnobs app. Grafana stores it as a secure setting."
       >
         <SecretInput
-          id="config-editor-api-key"
-          isConfigured={secureJsonFields.apiKey}
-          value={secureJsonData?.apiKey}
-          placeholder="not required for OSV"
+          id="config-editor-storage-token"
+          isConfigured={secureJsonFields.storageToken}
+          value={secureJsonData?.storageToken}
+          placeholder="A 32-character or longer token"
           width={40}
-          onReset={onResetAPIKey}
-          onChange={onAPIKeyChange}
+          onReset={onResetStorageToken}
+          onChange={onStorageTokenChange}
         />
       </InlineField>
     </>

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.2
+
+### Security and reliability
+
+- Replace plugin-local JSON persistence with the authenticated VulnObs Storage API.
+- Enforce tenant-scoped asset access and configurable finding retention.
+- Update Jest tooling and remove the webpack-only ESLint hook to drop the vulnerable `braces` dependency.
+- Keep linting enforced through `npm run lint` and CI.
+- Upgrade the Storage API's `golang.org/x/text` dependency to a patched release.
+
 ## 0.2.0
 
 ### Features

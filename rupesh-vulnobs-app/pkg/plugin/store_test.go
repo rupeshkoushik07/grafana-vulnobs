@@ -1,15 +1,73 @@
 package plugin
 
 import (
-	"os"
-	"path/filepath"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"sort"
 	"testing"
 )
 
-func TestAssetStorePersists(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "vulnobs")
-	s, err := newAssetStore(dir)
+func TestAssetStoreRemoteOperations(t *testing.T) {
+	assets := map[string]*AssetPosture{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer 01234567890123456789012345678901" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/health":
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/assets":
+			var p AssetPosture
+			if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+				t.Errorf("decode put: %v", err)
+			}
+			assets[p.Asset] = &p
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/assets":
+			list := make([]*AssetPosture, 0, len(assets))
+			for _, p := range assets {
+				list = append(list, p)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"assets": list})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/assets/get":
+			var body struct {
+				Asset string `json:"asset"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if p := assets[body.Asset]; p != nil {
+				_ = json.NewEncoder(w).Encode(p)
+				return
+			}
+			http.NotFound(w, r)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/assets/prune":
+			var body struct {
+				Source string   `json:"source"`
+				Keep   []string `json:"keep"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			keep := make(map[string]bool, len(body.Keep))
+			for _, name := range body.Keep {
+				keep[name] = true
+			}
+			removed := []string{}
+			for name, p := range assets {
+				if p.Source == body.Source && !keep[name] {
+					removed = append(removed, name)
+					delete(assets, name)
+				}
+			}
+			sort.Strings(removed)
+			_ = json.NewEncoder(w).Encode(map[string]any{"removed": removed})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	s, err := newAssetStore(server.URL, "01234567890123456789012345678901", server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,97 +75,48 @@ func TestAssetStorePersists(t *testing.T) {
 		{Package: "log4j-core", CVE: "CVE-2021-44228", Severity: "CRITICAL", KEV: true},
 		{Package: "lodash", CVE: "CVE-2021-23337", Severity: "HIGH"},
 	}
-	if _, err := s.put("ghcr.io/org/api:1.0", "cluster", "trivy", []string{"shop"}, rows); err != nil {
+	if _, err := s.put(t.Context(), "ghcr.io/org/api:1.0", "cluster", "trivy", []string{"shop"}, rows); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.put("payments-api", "api", "cyclonedx", nil, rows[1:]); err != nil {
+	if _, err := s.put(t.Context(), "payments-api", "api", "cyclonedx", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.check(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 
-	// A new store on the same directory, as after a Grafana restart.
-	reopened, err := newAssetStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, ok := reopened.get("ghcr.io/org/api:1.0")
-	if !ok {
-		t.Fatal("asset not found after reopening the store")
+	got, found, err := s.get(t.Context(), "ghcr.io/org/api:1.0")
+	if err != nil || !found {
+		t.Fatalf("get asset: found=%v err=%v", found, err)
 	}
 	if got.Source != "cluster" || got.KEV != 1 || got.Total != 2 || got.Counts["CRITICAL"] != 1 ||
 		!reflect.DeepEqual(got.Namespaces, []string{"shop"}) || len(got.Rows) != 2 {
-		t.Errorf("reloaded posture = %+v", got)
+		t.Errorf("posture = %+v", got)
 	}
 
-	list := reopened.list()
-	if len(list) != 2 || list[0].Asset != "ghcr.io/org/api:1.0" {
-		t.Errorf("list order = %v, want the asset with a KEV finding first", names(list))
+	list, err := s.list(t.Context())
+	if err != nil || len(list) != 2 || list[0].Asset != "ghcr.io/org/api:1.0" {
+		t.Fatalf("list = %v, err=%v", names(list), err)
 	}
 	if list[0].Rows != nil {
 		t.Error("list should not include rows")
 	}
-	if full, _ := reopened.get("ghcr.io/org/api:1.0"); len(full.Rows) != 2 {
-		t.Error("list must not strip rows from the stored posture")
+
+	removed, err := s.prune(t.Context(), "cluster", []string{"not-present"})
+	if err != nil || !reflect.DeepEqual(removed, []string{"ghcr.io/org/api:1.0"}) {
+		t.Errorf("pruned = %v, err=%v", removed, err)
 	}
 }
 
-func TestAssetStorePrune(t *testing.T) {
-	dir := t.TempDir()
-	s, _ := newAssetStore(dir)
-	for _, a := range []struct{ name, source string }{
-		{"python:3.12", "cluster"},
-		{"old-image:1.0", "cluster"},
-		{"payments-api", "api"},
+func TestNewAssetStoreRequiresURLAndToken(t *testing.T) {
+	for _, tc := range []struct{ url, token string }{
+		{"", "01234567890123456789012345678901"},
+		{"file:///tmp/store", "01234567890123456789012345678901"},
+		{"http://storage.example", "short"},
 	} {
-		if _, err := s.put(a.name, a.source, "trivy", nil, nil); err != nil {
-			t.Fatal(err)
+		if _, err := newAssetStore(tc.url, tc.token, nil); err == nil {
+			t.Errorf("newAssetStore(%q, %q) unexpectedly succeeded", tc.url, tc.token)
 		}
-	}
-
-	removed, err := s.prune("cluster", []string{"python:3.12", "never-scanned:2.0"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(removed, []string{"old-image:1.0"}) {
-		t.Errorf("removed = %v, want [old-image:1.0]", removed)
-	}
-
-	reopened, _ := newAssetStore(dir)
-	if got := names(reopened.list()); !reflect.DeepEqual(got, []string{"payments-api", "python:3.12"}) {
-		t.Errorf("assets after prune = %v", got)
-	}
-}
-
-func TestAssetStoreInMemory(t *testing.T) {
-	s, err := newAssetStore("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok, _ := s.persistent(); ok {
-		t.Error("store without a directory should not be persistent")
-	}
-	if _, err := s.put("a", "api", "trivy", nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := s.get("a"); !ok {
-		t.Error("in-memory store lost the asset")
-	}
-}
-
-func TestAssetStoreCorruptFile(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, storeFileName), []byte("{not json"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	s, err := newAssetStore(dir)
-	if err == nil {
-		t.Fatal("expected an error for a corrupt store file")
-	}
-	// Still usable, and the next change replaces the corrupt file.
-	if _, err := s.put("a", "api", "trivy", nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := newAssetStore(dir); err != nil {
-		t.Errorf("store file still unreadable after a write: %v", err)
 	}
 }
 

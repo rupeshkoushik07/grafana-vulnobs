@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rupesh/vulnobs/pkg/discover"
+	"github.com/rupeshkoushik07/grafana-vulnobs/scanner/pkg/discover"
 )
 
 func main() {

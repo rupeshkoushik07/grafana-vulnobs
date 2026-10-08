@@ -15,12 +15,23 @@ metrics, logs, and traces.
 
 ## Quick start
 
-Run Grafana with the Vulnobs app (including its nested OSV data source), a demo dashboard and an alert rule
-already set up. The image is built for `linux/amd64` and `linux/arm64`, so it runs natively
-on Intel and Apple Silicon machines.
+For local development, run Grafana with the Vulnobs app (including its nested OSV data
+source), a demo dashboard, an alert rule, and the PostgreSQL-backed storage API. The image
+is built for `linux/amd64` and `linux/arm64`, so it runs natively on Intel and Apple Silicon
+machines. The storage API requires PostgreSQL; the Grafana image alone is not a complete
+installation.
 
 ```bash
-docker run --rm -p 3000:3000 -v vulnobs-data:/var/lib/grafana ghcr.io/rupeshkoushik07/grafana-vulnobs:main
+git clone https://github.com/rupeshkoushik07/grafana-vulnobs.git
+cd grafana-vulnobs/rupesh-vulnobs-app
+npm ci
+npm run build
+mage -v build:linux
+cd ../rupesh-vulnobs-datasource
+mage -v build:linux
+cp dist/gpx_vulnobs_linux_amd64 ../rupesh-vulnobs-app/dist/datasource/
+cd ../rupesh-vulnobs-app
+docker compose up --build
 ```
 
 Once the logs settle (10–20 seconds):
@@ -43,15 +54,13 @@ Once the logs settle (10–20 seconds):
 5. Open **Dashboards → Vulnobs → Vulnobs — OSV demo** to see the data source in dashboard
    panels.
 
-Press Ctrl+C to stop; `--rm` removes the container. Pushed scans, like the rest of Grafana's
-data, live on the `vulnobs-data` volume, so they are still there the next time you run it.
-Reports uploaded on the Scan page are not stored.
+Press Ctrl+C to stop. Pushed scans persist in the Compose PostgreSQL volume and are
+available after Grafana restarts. Reports uploaded on the Scan page are not stored.
 
-- **Update to the latest build:** `docker pull ghcr.io/rupeshkoushik07/grafana-vulnobs:main`,
-  then run it again.
 - **Port 3000 already in use:** map another port, e.g. `-p 3001:3000`, and open
   http://localhost:3001.
-- **Start from scratch:** `docker volume rm vulnobs-data`.
+- **Start from scratch:** stop Compose and remove its PostgreSQL volume with
+  `docker compose down --volumes` (this deletes ingested scan data).
 - **Check what you're running:** the image is signed by this repo's pipeline; see
   [Verify an image](#verify-an-image).
 
@@ -143,7 +152,12 @@ flowchart TB
             dsfe --> dsbe
         end
 
-        store[("assets.json<br/>on the data volume")]
+    end
+
+    subgraph storage["Authenticated storage service"]
+        storageapi["Storage API<br/>Bearer token · tenant isolation"]
+        postgres[("PostgreSQL")]
+        storageapi --> postgres
     end
 
     osv[("OSV<br/>vulnerabilities")]
@@ -153,8 +167,8 @@ flowchart TB
     user --> appfe
     user --> dashes
     scanner -->|"POST /ingest, /prune"| appbe
-    appbe -->|"save"| store
-    dsbe -->|"read ingested assets"| store
+    appbe -->|"authenticated asset writes"| storageapi
+    dsbe -->|"authenticated asset queries"| storageapi
     dashes -->|"/api/ds/query"| dsbe
     alerting -->|"rule evaluation"| dsbe
     appbe -->|"HTTPS"| osv
@@ -174,20 +188,32 @@ flowchart TB
   probability) and **CISA KEV** (actively exploited) and given a priority score
   (`KEV > EPSS > severity`), so a CRITICAL-but-unexploited CVE can rank *below* a
   MODERATE-but-exploited one. `/enrich` exposes this engine on its own.
-- **Continuous cluster scanning:** a CronJob, deployed via [Tanka](./deploy/tanka), lists the
+- **Continuous cluster scanning:** a standalone scanner CronJob, deployed via [Tanka](./deploy/tanka), lists the
   images of every running pod through the Kubernetes API, scans each with Trivy, and pushes
   the reports to `/ingest` with the namespaces that run them. The app stores the latest
-  prioritized posture per image in `assets.json` on Grafana's data volume, so it survives
-  restarts, and `/prune` drops images that are no longer running. The **Assets** page shows
-  the result. Anything else, such as a CI job, can push to `/ingest` too.
+  prioritized posture per image in the authenticated storage API backed by PostgreSQL, so it
+  survives Grafana restarts. `/prune` drops images that are no longer running. The **Assets**
+  page shows the result. Anything else, such as a CI job, can push to `/ingest` too.
 - **Dashboards / Alerting (data source):** panels and alert rules issue queries to the data
   source backend (`QueryData`), which returns Grafana **data frames**. A package or CVE query
-  calls OSV. An **Ingested assets** query reads the app's saved scans and returns one row
+  calls OSV. An **Ingested assets** query reads scans from the shared storage API and returns one row
   per asset with a single count (actively exploited, critical, high, …), which is the shape
   alert rules need. The image provisions a rule that fires for every asset with an actively
   exploited vulnerability.
-- **No secrets required:** OSV, EPSS, and KEV are all free public feeds needing no
-  authentication.
+- OSV, EPSS, and KEV are public feeds and need no credentials. The storage API verifies a
+  signed, expiring tenant credential. The App and datasource each keep that credential in
+  Grafana's `secureJsonData` and must use the same tenant credential.
+
+### Choose where storage runs
+
+- **Self-hosted Grafana:** run the storage API and PostgreSQL with Docker Compose, or deploy
+  the API with Tanka and connect it to self-managed or managed PostgreSQL. The API keeps
+  normalized findings and asset metadata for 90 days by default; set
+  `VULNOBS_RETENTION_DAYS` (1–3650) to change retention.
+- **Grafana Cloud:** operate or use an externally hosted Vulnobs Storage API. Configure its
+  HTTPS URL and the tenant's signed token independently in the App and nested datasource
+  settings. The storage service operator issues credentials and controls PostgreSQL and
+  retention; the plugin does not host the service inside Grafana Cloud.
 
 ## Development
 
@@ -206,7 +232,9 @@ cd ../rupesh-vulnobs-datasource
 mage -v build:darwinARM64
 cp dist/gpx_vulnobs_darwin_arm64 ../rupesh-vulnobs-app/dist/datasource/
 cd ../rupesh-vulnobs-app
-docker compose up               # start Grafana at http://localhost:3000
+export VULNOBS_TOKEN_SIGNING_KEY="$(openssl rand -hex 32)"
+export VULNOBS_STORAGE_TOKEN="$(VULNOBS_TOKEN_SIGNING_KEY="$VULNOBS_TOKEN_SIGNING_KEY" python3 ../tools/create-storage-token.py --tenant-id local-dev)"
+docker compose up
 ```
 
 Each plugin is a standard [`@grafana/create-plugin`](https://grafana.com/developers/plugin-tools)
