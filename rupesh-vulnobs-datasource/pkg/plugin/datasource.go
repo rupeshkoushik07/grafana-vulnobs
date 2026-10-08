@@ -31,18 +31,25 @@ func NewDatasource(_ context.Context, s backend.DataSourceInstanceSettings) (ins
 		return nil, err
 	}
 	return &Datasource{
-		baseURL:    strings.TrimRight(settings.OsvBaseURL, "/"),
-		assetsDir:  strings.TrimSpace(settings.AssetsDataDir),
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+		baseURL:      models.DefaultOsvBaseURL,
+		storageURL:   strings.TrimRight(settings.StorageURL, "/"),
+		storageToken: settings.Secrets.StorageToken,
+		httpClient: &http.Client{
+			Timeout: 15 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}, nil
 }
 
 // Datasource queries public vulnerability feeds (OSV), and the scans ingested
 // by the Vulnobs app, and returns the results as Grafana data frames.
 type Datasource struct {
-	baseURL    string
-	assetsDir  string
-	httpClient *http.Client
+	baseURL      string
+	storageURL   string
+	storageToken string
+	httpClient   *http.Client
 }
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
@@ -99,7 +106,7 @@ func (d *Datasource) query(ctx context.Context, _ backend.PluginContext, query b
 
 	// Ingested assets: the scans saved by the Vulnobs app, one row per asset.
 	if query.QueryType == QueryTypeAssets {
-		assets, err := loadIngestedAssets(d.assetsDir)
+		assets, err := loadIngestedAssets(ctx, d.storageURL, d.storageToken, d.httpClient)
 		if err != nil {
 			return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
 		}
@@ -149,14 +156,14 @@ func (d *Datasource) CheckHealth(ctx context.Context, _ *backend.CheckHealthRequ
 	}
 
 	message := fmt.Sprintf("Connected to OSV at %s", d.baseURL)
-	if d.assetsDir != "" {
-		if _, err := loadIngestedAssets(d.assetsDir); err != nil {
+	if d.storageURL != "" || d.storageToken != "" {
+		if _, err := loadIngestedAssets(ctx, d.storageURL, d.storageToken, d.httpClient); err != nil {
 			return &backend.CheckHealthResult{
 				Status:  backend.HealthStatusError,
 				Message: fmt.Sprintf("%s, but ingested assets can't be read: %v", message, err),
 			}, nil
 		}
-		message += fmt.Sprintf("; reading ingested assets from %s", d.assetsDir)
+		message += "; connected to the authenticated storage API"
 	}
 	return &backend.CheckHealthResult{Status: backend.HealthStatusOk, Message: message}, nil
 }

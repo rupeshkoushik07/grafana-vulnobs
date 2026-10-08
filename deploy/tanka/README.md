@@ -5,6 +5,8 @@ Kubernetes:
 
 - **Grafana**, running the signed Vulnobs image (the bundled app and nested OSV data source, a demo
   dashboard and an alert rule baked in) on a persistent volume.
+- **Vulnobs storage API**, which authenticates requests and stores tenant-isolated asset postures
+  in PostgreSQL. PostgreSQL can be self-managed or managed externally.
 - A **scan CronJob** that finds every image running in the cluster, scans each one with
   Trivy, and pushes the reports to the app's `/ingest` endpoint. The results show up on the
   app's **Assets** page, ranked by exploit risk, and feed an alert rule that fires for any
@@ -47,9 +49,10 @@ deploy/tanka/
 | Kind | Name | Purpose |
 | --- | --- | --- |
 | Namespace | `vulnobs` | isolates the stack |
-| PersistentVolumeClaim | `grafana-data` | Grafana's data directory: its database and the ingested scans |
+| PersistentVolumeClaim | `grafana-data` | Grafana's database and plugin state |
 | Deployment | `grafana` | runs `ghcr.io/rupeshkoushik07/grafana-vulnobs`, built by [`image.yml`](../../.github/workflows/image.yml) |
 | Service | `grafana` | exposes Grafana on `:3000` |
+| Deployment, Service | `vulnobs-storage` | authenticated API in front of the PostgreSQL asset store |
 | ServiceAccount | `vulnobs-scanner` | identity of the scan job |
 | ClusterRole, ClusterRoleBinding | `vulnobs-scanner` | lets the scan job **list pods**, nothing else |
 | CronJob | `vulnobs-scan` | discover images → Trivy scan → push to `/ingest` → prune (see below) |
@@ -84,11 +87,35 @@ tk show environments/default      # applyable Kubernetes YAML
 # point the environment at your cluster
 tk env set environments/default --server=https://your-api-server:6443
 
+# Create/provision PostgreSQL, then supply its URL and a random tenant token.
+kubectl create namespace vulnobs
+kubectl -n vulnobs create secret generic vulnobs-storage \
+  --from-literal=database-url='postgres://USER:PASSWORD@DB_HOST:5432/vulnobs?sslmode=require' \
+  --from-literal=storage-token="$(openssl rand -hex 32)"
+
 tk apply environments/default     # shows a diff, then applies
 
 kubectl -n vulnobs port-forward svc/grafana 3000:3000
 # open http://localhost:3000, log in as admin / admin -> More apps -> Vulnobs -> Assets
 ```
+
+Grafana provisions the same token securely into the App and datasource. The
+storage service derives an opaque tenant ID from the token, so separate tokens
+cannot read or change one another's assets. Keep PostgreSQL private and require
+TLS for connections outside the cluster.
+
+To migrate an existing installation's JSON store, first back up the old file,
+then copy it out of the Grafana pod and import it with the same token configured
+in the Kubernetes Secret:
+
+```bash
+kubectl -n vulnobs cp grafana-DEPLOYMENT_POD:/var/lib/grafana/vulnobs/assets.json ./assets.json
+kubectl -n vulnobs port-forward svc/vulnobs-storage 8080:8080
+VULNOBS_STORAGE_TOKEN='your-existing-storage-token' \
+  python3 ../../tools/migrate-assets.py ./assets.json http://127.0.0.1:8080
+```
+
+Keep the backup until the Assets page and dashboards show the imported records.
 
 The first scan runs at the top of the next hour. To run one now:
 
@@ -161,6 +188,4 @@ image built from the pull request, so it runs with the policy off.
   cluster.
 - The app matches each image's language packages (npm, PyPI, Go, Maven, …) against OSV. OS
   packages such as Debian or Alpine ones are counted but not matched.
-- Scans are saved in `/var/lib/grafana/vulnobs` on the data volume, so they survive pod
-  restarts. The volume is `ReadWriteOnce`, which is why Grafana runs as one replica with the
-  `Recreate` strategy.
+- Scan postures are stored in PostgreSQL, independently of Grafana's data volume.

@@ -66,6 +66,12 @@
   "engines": {
     "node": ">=22"
   },
+  "overrides": {
+    "basic-ftp": "^6.2.1",
+    "dompurify": "^3.4.16",
+    "js-cookie": "^3.0.8",
+    "moment": "^2.31.0"
+  },
   "dependencies": {
     "@emotion/css": "11.10.6",
     "@grafana/data": "13.1.0",

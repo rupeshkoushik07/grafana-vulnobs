@@ -63,6 +63,21 @@ jobs:
       - name: Install Tanka
         run: go install "github.com/grafana/tanka/cmd/tk@${TANKA_VERSION}"
 
+      - name: Prepare PostgreSQL and storage credentials
+        run: |
+          kubectl create namespace vulnobs
+          kubectl -n vulnobs create deployment postgres \
+            --image=postgres:17-alpine \
+            --env=POSTGRES_DB=vulnobs \
+            --env=POSTGRES_USER=vulnobs \
+            --env=POSTGRES_PASSWORD=vulnobs-test \
+            --port=5432
+          kubectl -n vulnobs expose deployment postgres --port=5432
+          kubectl -n vulnobs rollout status deployment/postgres --timeout=5m
+          kubectl -n vulnobs create secret generic vulnobs-storage \
+            --from-literal=database-url='postgres://vulnobs:vulnobs-test@postgres:5432/vulnobs?sslmode=disable' \
+            --from-literal=storage-token="$(openssl rand -hex 32)"
+
       - name: Write test helpers
         run: |
           cat > "$RUNNER_TEMP/grafana.sh" <<'EOF'
@@ -109,10 +124,10 @@ jobs:
           echo "The bundled app is loaded:"
           curl -fsS "$G/api/plugins/rupeshkoushik07-vulnobs-app/settings" | jq -c '{id, signature, version: .info.version}'
 
-          echo "The app is enabled, has the Assets page, and saves scans to disk:"
+          echo "The app is enabled, has the Assets page, and reaches persistent storage:"
           curl -fsS "$G/api/plugins/rupeshkoushik07-vulnobs-app/settings" \
             | jq -e '.enabled == true and any(.includes[]; .name == "Assets") and any(.includes[]; .type == "datasource" and .path == "datasource/plugin.json")'
-          curl -fsS "$G/api/plugins/rupeshkoushik07-vulnobs-app/health" | jq -e '.message | test("saved in /var/lib/grafana/vulnobs")'
+          curl -fsS "$G/api/plugins/rupeshkoushik07-vulnobs-app/health" | jq -e '.message | test("Connected to the authenticated storage API")'
 
           echo "The nested, native data source reaches OSV and can read ingested assets:"
           curl -fsS "$G/api/datasources/uid/vulnobs-osv/health" | jq -e '.status == "OK"'

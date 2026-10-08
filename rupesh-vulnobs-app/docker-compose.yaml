@@ -1,4 +1,30 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: vulnobs
+      POSTGRES_USER: vulnobs
+      POSTGRES_PASSWORD: vulnobs-local
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U vulnobs -d vulnobs']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - vulnobs-postgres:/var/lib/postgresql/data
+
+  vulnobs-storage:
+    image: vulnobs-storage:dev
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ['/usr/local/bin/vulnobs-storage']
+    environment:
+      DATABASE_URL: postgres://vulnobs:vulnobs-local@postgres:5432/vulnobs?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   grafana:
     extends:
       file: .config/docker-compose-base.yaml
@@ -6,3 +32,14 @@ services:
     environment:
       GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: rupeshkoushik07-vulnobs-app,rupeshkoushik07-vulnobs-datasource
       GF_LOG_FILTERS: plugin.rupeshkoushik07-vulnobs-app:debug,plugin.rupeshkoushik07-vulnobs-datasource:debug
+      VULNOBS_STORAGE_TOKEN: local-development-only-token-change-this-32chars
+    depends_on:
+      vulnobs-storage:
+        condition: service_started
+    volumes:
+      - ../image/provisioning/datasources/vulnobs.yaml:/etc/grafana/provisioning/datasources/vulnobs.yaml
+      - ../image/provisioning/plugins/apps.yaml:/etc/grafana/provisioning/plugins/vulnobs.yaml
+      - ../rupesh-vulnobs-datasource/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+
+volumes:
+  vulnobs-postgres:

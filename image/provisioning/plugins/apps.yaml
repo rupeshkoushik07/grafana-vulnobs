@@ -1,12 +1,12 @@
 apiVersion: 1
 
 # Enable the Vulnobs app in the image, so its pages show up without a manual
-# step. Every feed it reads is public, so the only setting is where to save
-# ingested scans: under Grafana's data path, so they survive restarts when a
-# volume is mounted at /var/lib/grafana.
+# step. Ingested scans are stored by the authenticated storage API.
 apps:
   - type: 'rupeshkoushik07-vulnobs-app'
     org_id: 1
     disabled: false
     jsonData:
-      dataDir: '/var/lib/grafana/vulnobs'
+      storageUrl: 'http://vulnobs-storage:8080'
+    secureJsonData:
+      storageToken: '$VULNOBS_STORAGE_TOKEN'
