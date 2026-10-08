@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
   "type": "app",
   "name": "Vulnobs",
-  "id": "daringdogwood2354-vulnobs-app",
+  "id": "rupeshkoushik07-vulnobs-app",
   "backend": true,
   "executable": "gpx_vulnobs",
   "info": {
@@ -66,6 +66,11 @@
       "path": "/plugins/%PLUGIN_ID%",
       "role": "Admin",
       "addToNav": true
+    },
+    {
+      "type": "datasource",
+      "name": "Vulnobs OSV",
+      "path": "datasource/plugin.json"
     }
   ],
   "dependencies": {

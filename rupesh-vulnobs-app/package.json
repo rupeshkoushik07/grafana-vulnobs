@@ -1,9 +1,10 @@
 {
   "name": "vulnobs",
-  "version": "0.2.0",
+  "version": "0.5.0",
   "scripts": {
-    "build": "webpack -c ./.config/webpack/webpack.config.ts --env production",
+    "build": "webpack -c ./.config/webpack/webpack.config.ts --env production && npm run copy:nested-assets",
     "dev": "webpack -w -c ./.config/webpack/webpack.config.ts --env development",
+    "copy:nested-assets": "node scripts/copy-nested-assets.mjs",
     "test": "jest --watch --onlyChanged",
     "test:ci": "jest --passWithNoTests --maxWorkers 4",
     "typecheck": "tsc --noEmit",

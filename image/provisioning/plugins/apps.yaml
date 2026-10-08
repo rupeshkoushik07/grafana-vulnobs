@@ -5,7 +5,7 @@ apiVersion: 1
 # ingested scans: under Grafana's data path, so they survive restarts when a
 # volume is mounted at /var/lib/grafana.
 apps:
-  - type: 'daringdogwood2354-vulnobs-app'
+  - type: 'rupeshkoushik07-vulnobs-app'
     org_id: 1
     disabled: false
     jsonData:

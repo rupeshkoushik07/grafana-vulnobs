@@ -3,7 +3,7 @@
 A [Grafana Tanka](https://tanka.dev) environment that deploys the Vulnobs stack to
 Kubernetes:
 
-- **Grafana**, running the signed Vulnobs image (both plugins, the OSV data source, a demo
+- **Grafana**, running the signed Vulnobs image (the bundled app and nested OSV data source, a demo
   dashboard and an alert rule baked in) on a persistent volume.
 - A **scan CronJob** that finds every image running in the cluster, scans each one with
   Trivy, and pushes the reports to the app's `/ingest` endpoint. The results show up on the
@@ -21,7 +21,7 @@ The [`kubernetes.yml`](../../.github/workflows/kubernetes.yml) workflow deploys 
 environment to a throwaway [kind](https://kind.sigs.k8s.io) cluster on every pull request
 and push to `main`, using an image built from that commit. It checks that:
 
-- Grafana becomes ready with both plugins loaded, the app enabled with its Assets page, and
+- Grafana becomes ready with the bundled app and datasource loaded, the app enabled with its Assets page, and
   scans saved to the data volume;
 - the provisioned data source reaches OSV and the demo dashboard exists;
 - a scan finds a demo workload's image in its namespace, skips excluded namespaces, and

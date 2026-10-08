@@ -1,6 +1,6 @@
 name: Image
 
-# Builds ghcr.io/<owner>/<repo>: Grafana with both Vulnobs plugins baked in.
+# Builds ghcr.io/<owner>/<repo>: Grafana with the bundled Vulnobs app baked in.
 # Pull requests build and run the vulnerability gate only. Pushes to main and
 # v* tags also push the image, generate an SBOM, sign the image by digest and
 # attach the SBOM as a signed attestation.
@@ -33,7 +33,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      # Build only what this repo adds to the image (both plugins and the
+      # Build only what this repo adds to the image (the bundled plugin and the
       # cluster scan helper, for both architectures) and export it, so it is
       # scanned before anything is pushed.
       - name: Build artifacts

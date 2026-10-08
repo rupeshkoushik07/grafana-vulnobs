@@ -1,7 +1,7 @@
 name: Kubernetes
 
 # Deploys the stack to a throwaway kind cluster with Tanka and checks it end to
-# end: Grafana with both plugins and its provisioning; a scheduled cluster scan
+# end: Grafana with the bundled app/datasource and its provisioning; a scheduled cluster scan
 # that finds a running workload's image and ingests it; the result surviving a
 # Grafana restart; the data source and provisioned alert rule reading it; and
 # the scan pruning the image once the workload is gone.
@@ -106,16 +106,15 @@ jobs:
           . "$RUNNER_TEMP/grafana.sh"
           grafana_up
 
-          echo "Both plugins are loaded:"
-          for p in rupesh-vulnobs-app rupesh-vulnobs-datasource; do
-            curl -fsS "$G/api/plugins/$p/settings" | jq -c '{id, signature, version: .info.version}'
-          done
+          echo "The bundled app is loaded:"
+          curl -fsS "$G/api/plugins/rupeshkoushik07-vulnobs-app/settings" | jq -c '{id, signature, version: .info.version}'
 
           echo "The app is enabled, has the Assets page, and saves scans to disk:"
-          curl -fsS "$G/api/plugins/daringdogwood2354-vulnobs-app/settings" | jq -e '.enabled == true and any(.includes[]; .name == "Assets")'
-          curl -fsS "$G/api/plugins/daringdogwood2354-vulnobs-app/health" | jq -e '.message | test("saved in /var/lib/grafana/vulnobs")'
+          curl -fsS "$G/api/plugins/rupeshkoushik07-vulnobs-app/settings" \
+            | jq -e '.enabled == true and any(.includes[]; .name == "Assets") and any(.includes[]; .type == "datasource" and .path == "datasource/plugin.json")'
+          curl -fsS "$G/api/plugins/rupeshkoushik07-vulnobs-app/health" | jq -e '.message | test("saved in /var/lib/grafana/vulnobs")'
 
-          echo "The provisioned data source reaches OSV and can read ingested assets:"
+          echo "The nested, native data source reaches OSV and can read ingested assets:"
           curl -fsS "$G/api/datasources/uid/vulnobs-osv/health" | jq -e '.status == "OK"'
 
           echo "The demo dashboard is provisioned:"

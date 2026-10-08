@@ -8,18 +8,12 @@ permissions:
   contents: write
 
 env:
-  # Fail the build instead of silently resolving a module that go.mod/go.sum
-  # don't already pin.
   GOFLAGS: -mod=readonly
 
 jobs:
   release:
-    name: Package ${{ matrix.plugin }}
+    name: Package Vulnobs App
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        plugin: [rupesh-vulnobs-app, rupesh-vulnobs-datasource]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -29,30 +23,42 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: ${{ matrix.plugin }}/package-lock.json
+          cache-dependency-path: rupesh-vulnobs-app/package-lock.json
 
-      - name: Install & build frontend
-        working-directory: ${{ matrix.plugin }}
+      - name: Build app and nested datasource frontends
+        working-directory: rupesh-vulnobs-app
         run: |
           npm ci
+          npm run lint
+          npm run typecheck
+          npm run test:ci
           npm run build
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: ${{ matrix.plugin }}/go.mod
-          cache-dependency-path: ${{ matrix.plugin }}/go.sum
+          go-version-file: rupesh-vulnobs-app/go.mod
+          cache-dependency-path: |
+            rupesh-vulnobs-app/go.sum
+            rupesh-vulnobs-datasource/go.sum
 
       - name: Install mage
         run: go install github.com/magefile/mage@v1.17.2
 
-      - name: Build backend (all architectures)
-        working-directory: ${{ matrix.plugin }}
+      - name: Build app backend (all architectures)
+        working-directory: rupesh-vulnobs-app
         run: mage -v buildAll
 
-      # Signing is optional: it only runs when a Grafana access-policy token is
-      # configured as a repo secret. Without it we still ship an unsigned build.
+      - name: Build nested datasource backend (all architectures)
+        working-directory: rupesh-vulnobs-datasource
+        run: mage -v buildAll
+
+      - name: Assemble bundled App
+        run: mkdir -p rupesh-vulnobs-app/dist/datasource && cp rupesh-vulnobs-datasource/dist/gpx_vulnobs_* rupesh-vulnobs-app/dist/datasource/
+
+      # Signing covers the single distributable App package, including the
+      # nested datasource frontend and backend.
       - name: Sign plugin
-        working-directory: ${{ matrix.plugin }}
+        working-directory: rupesh-vulnobs-app
         env:
           GRAFANA_ACCESS_POLICY_TOKEN: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN }}
         run: |
@@ -63,13 +69,12 @@ jobs:
           fi
 
       - name: Package
-        working-directory: ${{ matrix.plugin }}
         run: |
-          mv dist "${{ matrix.plugin }}"
-          zip -r "../${{ matrix.plugin }}-${{ github.ref_name }}.zip" "${{ matrix.plugin }}"
+          mv rupesh-vulnobs-app/dist rupeshkoushik07-vulnobs-app
+          zip -r "rupeshkoushik07-vulnobs-app-${GITHUB_REF_NAME}.zip" rupeshkoushik07-vulnobs-app
 
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          files: ${{ matrix.plugin }}-${{ github.ref_name }}.zip
+          files: rupeshkoushik07-vulnobs-app-${{ github.ref_name }}.zip
           generate_release_notes: true
