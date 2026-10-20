@@ -31,8 +31,13 @@ cd ../rupesh-vulnobs-datasource
 mage -v build:linux
 cp dist/gpx_vulnobs_linux_amd64 ../rupesh-vulnobs-app/dist/datasource/
 cd ../rupesh-vulnobs-app
+export VULNOBS_TOKEN_SIGNING_KEY="$(openssl rand -hex 32)"
+export VULNOBS_STORAGE_TOKEN="$(python3 ../tools/create-storage-token.py --tenant-id local-dev)"
 docker compose up --build
 ```
+
+Keep the signing key secure and reuse it across restarts; generating a new key invalidates
+previously issued storage tokens.
 
 Once the logs settle (10–20 seconds):
 

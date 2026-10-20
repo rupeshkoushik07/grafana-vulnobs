@@ -18,7 +18,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    command: ['/usr/local/bin/vulnobs-storage']
+    entrypoint: ['/usr/local/bin/vulnobs-storage']
     environment:
       DATABASE_URL: postgres://vulnobs:vulnobs-local@postgres:5432/vulnobs?sslmode=disable
       VULNOBS_TOKEN_SIGNING_KEY: ${VULNOBS_TOKEN_SIGNING_KEY:?set a 32-byte signing key}
