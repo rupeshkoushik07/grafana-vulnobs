@@ -40,6 +40,20 @@ spec:
               value: http://grafana.vulnobs.svc:3000/api/plugins/rupeshkoushik07-vulnobs-app/resources
             image: curlimages/curl:8.22.0
             name: push
+            resources:
+              limits:
+                memory: 64Mi
+              requests:
+                cpu: 10m
+                memory: 16Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
+              runAsUser: 100
             volumeMounts:
             - mountPath: /work
               name: work
@@ -55,6 +69,19 @@ spec:
             - vulnobs-discover
             image: ghcr.io/rupeshkoushik07/grafana-vulnobs:main
             name: discover
+            resources:
+              limits:
+                memory: 256Mi
+              requests:
+                cpu: 50m
+                memory: 64Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
             volumeMounts:
             - mountPath: /work
               name: work
@@ -87,10 +114,24 @@ spec:
             - -c
             image: ghcr.io/aquasecurity/trivy:0.74.0
             name: trivy
+            resources:
+              limits:
+                memory: 2Gi
+              requests:
+                cpu: 250m
+                memory: 512Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
             volumeMounts:
             - mountPath: /work
               name: work
           restartPolicy: Never
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
           serviceAccountName: vulnobs-scanner
           volumes:
           - emptyDir: {}

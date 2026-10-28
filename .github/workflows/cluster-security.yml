@@ -1,0 +1,399 @@
+name: Cluster security
+
+# Deploys the stack to a throwaway kind cluster with Tanka, exactly as
+# kubernetes.yml does, then audits the cluster:
+#  - kube-bench (Aqua Security) checks the node and control plane against the
+#    CIS Kubernetes Benchmark;
+#  - kube-hunter (Aqua Security) probes the cluster from inside a pod, like a
+#    compromised workload would;
+#  - our own workloads are checked for the pod hardening the Tanka manifests
+#    promise (CIS section 5 / Pod Security Standards).
+#
+# kube-bench and kube-hunter findings are reported but never fail the run:
+# they are almost all about kind's own kubelet, API server and etcd settings,
+# which this repo doesn't control. Only the workload check can fail it.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths:
+      - deploy/**
+      - .github/workflows/cluster-security.yml
+
+permissions:
+  contents: read
+
+env:
+  TANKA_VERSION: v0.39.1
+  KUBE_BENCH_IMAGE: docker.io/aquasec/kube-bench:v0.16.0
+  # kube-bench v0.16.0 maps Kubernetes versions only up to 1.34, and kind's
+  # default node is newer, so name the newest CIS benchmark it ships.
+  KUBE_BENCH_BENCHMARK: cis-1.12
+  # kube-hunter is archived; 0.6.8 is its last release.
+  KUBE_HUNTER_IMAGE: docker.io/aquasec/kube-hunter:0.6.8
+  AUDIT_NAMESPACE: cluster-security
+
+jobs:
+  audit:
+    name: kube-bench and kube-hunter
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      # Build the image from this commit, so pull requests are tested too.
+      - name: Build image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: vulnobs:ci
+          cache-from: type=gha
+
+      - name: Create kind cluster
+        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          cluster_name: vulnobs
+
+      - name: Load image into kind
+        run: kind load docker-image vulnobs:ci --name vulnobs
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: rupesh-vulnobs-app/go.mod
+          cache: false
+
+      # Tanka publishes no checksums for its release binaries. Building from
+      # source verifies it against the Go checksum database instead.
+      - name: Install Tanka
+        run: go install "github.com/grafana/tanka/cmd/tk@${TANKA_VERSION}"
+
+      - name: Prepare PostgreSQL and storage credentials
+        run: |
+          kubectl create namespace vulnobs
+          kubectl -n vulnobs create deployment postgres \
+            --image=postgres:17-alpine \
+            --port=5432
+          kubectl -n vulnobs set env deployment/postgres \
+            POSTGRES_DB=vulnobs \
+            POSTGRES_USER=vulnobs \
+            POSTGRES_PASSWORD=vulnobs-test
+          kubectl -n vulnobs expose deployment postgres --port=5432
+          kubectl -n vulnobs rollout status deployment/postgres --timeout=5m
+          for _ in $(seq 1 60); do
+            if kubectl -n vulnobs exec deployment/postgres -- psql -U vulnobs -d vulnobs -c 'SELECT 1' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          kubectl -n vulnobs exec deployment/postgres -- psql -U vulnobs -d vulnobs -v ON_ERROR_STOP=1 -c "CREATE TABLE vulnobs_assets (tenant_id TEXT NOT NULL, asset TEXT NOT NULL, source TEXT NOT NULL, posture JSONB NOT NULL, PRIMARY KEY (tenant_id, asset)); INSERT INTO vulnobs_assets (tenant_id, asset, source, posture) VALUES ('ci', 'expired-fixture', 'cluster', '{\"asset\":\"expired-fixture\",\"source\":\"cluster\",\"lastScanned\":\"2024-01-01T00:00:00Z\",\"counts\":{},\"kev\":0,\"total\":0}');"
+          signing_key="$(openssl rand -hex 32)"
+          storage_token="$(VULNOBS_TOKEN_SIGNING_KEY="$signing_key" python3 tools/create-storage-token.py --tenant-id ci --lifetime-days 1)"
+          kubectl -n vulnobs create secret generic vulnobs-storage \
+            --from-literal=database-url='postgres://vulnobs:vulnobs-test@postgres:5432/vulnobs?sslmode=disable' \
+            --from-literal=token-signing-key="$signing_key" \
+            --from-literal=storage-token="$storage_token"
+
+      - name: Deploy with Tanka
+        working-directory: deploy/tanka
+        run: |
+          tk env set environments/default \
+            --server="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
+          tk apply environments/default --auto-approve always \
+            --tla-str imageRepository=vulnobs \
+            --tla-str imageTag=ci
+          kubectl -n vulnobs rollout status deployment/vulnobs-storage --timeout=5m
+          kubectl -n vulnobs rollout status deployment/grafana --timeout=5m
+          expired_records=$(kubectl -n vulnobs exec deployment/postgres -- psql -At -U vulnobs -d vulnobs -c "SELECT count(*) FROM vulnobs_assets WHERE tenant_id='ci' AND asset='expired-fixture'")
+          test "$expired_records" = 0
+
+      # Run the scan CronJob once, so its (hardened) pod is running in the
+      # cluster during the audit and is covered by the workload check below.
+      - name: Run the cluster scan once
+        run: |
+          kubectl -n vulnobs create job scan-audit --from=cronjob/vulnobs-scan
+          for _ in $(seq 1 120); do
+            status=$(kubectl -n vulnobs get job scan-audit -o jsonpath='{.status.succeeded}/{.status.failed}')
+            case "$status" in
+              1/*) break ;;
+              */[1-9]*) break ;;
+            esac
+            sleep 10
+          done
+          kubectl -n vulnobs logs job/scan-audit --all-containers --prefix
+          [ "$(kubectl -n vulnobs get job scan-audit -o jsonpath='{.status.succeeded}')" = 1 ]
+
+      - name: Write audit helpers
+        run: |
+          mkdir -p "$RUNNER_TEMP/reports"
+          cat > "$RUNNER_TEMP/audit.sh" <<'EOF'
+          # Wait for a Job in the audit namespace to finish (either way).
+          wait_job() {
+            for _ in $(seq 1 90); do
+              status=$(kubectl -n "$AUDIT_NAMESPACE" get job "$1" -o jsonpath='{.status.succeeded}/{.status.failed}')
+              case "$status" in
+                1/*) return 0 ;;
+                */[1-9]*) echo "job $1 failed" >&2; return 1 ;;
+              esac
+              sleep 10
+            done
+            echo "job $1 did not finish" >&2
+            return 1
+          }
+          EOF
+          kubectl create namespace "$AUDIT_NAMESPACE"
+
+      # Upstream job.yaml (aquasecurity/kube-bench), with the image pinned and
+      # two containers: one prints the text report, one writes JSON. kind's
+      # control plane and kubelet run inside the single node container, so the
+      # host paths and host PID namespace below are that node's.
+      - name: Run kube-bench
+        run: |
+          . "$RUNNER_TEMP/audit.sh"
+          kubectl -n "$AUDIT_NAMESPACE" apply -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: kube-bench
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 900
+            template:
+              metadata:
+                labels:
+                  app: kube-bench
+              spec:
+                hostPID: true
+                restartPolicy: Never
+                containers:
+                  - name: text
+                    image: ${KUBE_BENCH_IMAGE}
+                    command: ["kube-bench", "run", "--benchmark", "${KUBE_BENCH_BENCHMARK}"]
+                    volumeMounts:
+                      - { name: var-lib-cni, mountPath: /var/lib/cni, readOnly: true }
+                      - { name: var-lib-etcd, mountPath: /var/lib/etcd, readOnly: true }
+                      - { name: var-lib-kubelet, mountPath: /var/lib/kubelet, readOnly: true }
+                      - { name: var-lib-kube-scheduler, mountPath: /var/lib/kube-scheduler, readOnly: true }
+                      - { name: var-lib-kube-controller-manager, mountPath: /var/lib/kube-controller-manager, readOnly: true }
+                      - { name: etc-systemd, mountPath: /etc/systemd, readOnly: true }
+                      - { name: lib-systemd, mountPath: /lib/systemd/, readOnly: true }
+                      - { name: srv-kubernetes, mountPath: /srv/kubernetes/, readOnly: true }
+                      - { name: etc-kubernetes, mountPath: /etc/kubernetes, readOnly: true }
+                      - { name: usr-bin, mountPath: /usr/local/mount-from-host/bin, readOnly: true }
+                      - { name: etc-cni-netd, mountPath: /etc/cni/net.d/, readOnly: true }
+                      - { name: opt-cni-bin, mountPath: /opt/cni/bin/, readOnly: true }
+                  - name: json
+                    image: ${KUBE_BENCH_IMAGE}
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - |
+                        kube-bench run --benchmark ${KUBE_BENCH_BENCHMARK} --json --outputfile /tmp/kube-bench.json > /dev/null
+                        rc=\$?
+                        echo '--- kube-bench json ---'
+                        cat /tmp/kube-bench.json
+                        exit \$rc
+                    volumeMounts:
+                      - { name: var-lib-cni, mountPath: /var/lib/cni, readOnly: true }
+                      - { name: var-lib-etcd, mountPath: /var/lib/etcd, readOnly: true }
+                      - { name: var-lib-kubelet, mountPath: /var/lib/kubelet, readOnly: true }
+                      - { name: var-lib-kube-scheduler, mountPath: /var/lib/kube-scheduler, readOnly: true }
+                      - { name: var-lib-kube-controller-manager, mountPath: /var/lib/kube-controller-manager, readOnly: true }
+                      - { name: etc-systemd, mountPath: /etc/systemd, readOnly: true }
+                      - { name: lib-systemd, mountPath: /lib/systemd/, readOnly: true }
+                      - { name: srv-kubernetes, mountPath: /srv/kubernetes/, readOnly: true }
+                      - { name: etc-kubernetes, mountPath: /etc/kubernetes, readOnly: true }
+                      - { name: usr-bin, mountPath: /usr/local/mount-from-host/bin, readOnly: true }
+                      - { name: etc-cni-netd, mountPath: /etc/cni/net.d/, readOnly: true }
+                      - { name: opt-cni-bin, mountPath: /opt/cni/bin/, readOnly: true }
+                volumes:
+                  - { name: var-lib-cni, hostPath: { path: /var/lib/cni } }
+                  - { name: var-lib-etcd, hostPath: { path: /var/lib/etcd } }
+                  - { name: var-lib-kubelet, hostPath: { path: /var/lib/kubelet } }
+                  - { name: var-lib-kube-scheduler, hostPath: { path: /var/lib/kube-scheduler } }
+                  - { name: var-lib-kube-controller-manager, hostPath: { path: /var/lib/kube-controller-manager } }
+                  - { name: etc-systemd, hostPath: { path: /etc/systemd } }
+                  - { name: lib-systemd, hostPath: { path: /lib/systemd } }
+                  - { name: srv-kubernetes, hostPath: { path: /srv/kubernetes } }
+                  - { name: etc-kubernetes, hostPath: { path: /etc/kubernetes } }
+                  - { name: usr-bin, hostPath: { path: /usr/bin } }
+                  - { name: etc-cni-netd, hostPath: { path: /etc/cni/net.d/ } }
+                  - { name: opt-cni-bin, hostPath: { path: /opt/cni/bin/ } }
+          EOF
+          ok=true
+          wait_job kube-bench || ok=false
+          reports="$RUNNER_TEMP/reports"
+          kubectl -n "$AUDIT_NAMESPACE" logs job/kube-bench -c text > "$reports/kube-bench.txt" || true
+          kubectl -n "$AUDIT_NAMESPACE" logs job/kube-bench -c json \
+            | sed -n '/^--- kube-bench json ---$/,$p' | sed 1d > "$reports/kube-bench.json" || true
+          cat "$reports/kube-bench.txt"
+          # A missing or broken report means kube-bench itself didn't run.
+          $ok && jq -e '.Totals' "$reports/kube-bench.json" > /dev/null
+
+      - name: Summarise kube-bench
+        run: |
+          report="$RUNNER_TEMP/reports/kube-bench.json"
+          {
+            echo "## kube-bench (CIS Kubernetes Benchmark, \`${KUBE_BENCH_BENCHMARK}\`)"
+            echo
+            echo "Findings are about kind's node and control plane unless the section is 5 (Policies). They don't fail this workflow."
+            echo
+            jq -r '.Totals | "**PASS \(.total_pass) · FAIL \(.total_fail) · WARN \(.total_warn) · INFO \(.total_info)**"' "$report"
+            echo
+            echo "| Section | Node type | PASS | FAIL | WARN | INFO |"
+            echo "|---|---|---:|---:|---:|---:|"
+            jq -r '.Controls[] | "| \(.id) \(.text) | \(.node_type) | \(.total_pass) | \(.total_fail) | \(.total_warn) | \(.total_info) |"' "$report"
+            echo
+            echo "<details><summary>FAIL results</summary>"
+            echo
+            jq -r '[.Controls[].tests[].results[] | select(.status == "FAIL")]
+              | if length == 0 then "None." else .[] | "- \(.test_number) \(.test_desc)" end' "$report"
+            echo
+            echo "</details>"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Upstream job.yaml (aquasecurity/kube-hunter), with the image pinned, a
+      # JSON report, and --quick (scan the pod's /24, not its /16). In pod mode kube-hunter also checks what the pod's own
+      # service account token can do (the audit namespace's default one).
+      - name: Run kube-hunter
+        run: |
+          . "$RUNNER_TEMP/audit.sh"
+          kubectl -n "$AUDIT_NAMESPACE" apply -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: kube-hunter
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 900
+            template:
+              metadata:
+                labels:
+                  app: kube-hunter
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: kube-hunter
+                    image: ${KUBE_HUNTER_IMAGE}
+                    command: ["kube-hunter"]
+                    args: ["--pod", "--quick", "--report", "json", "--log", "none"]
+          EOF
+          ok=true
+          wait_job kube-hunter || ok=false
+          reports="$RUNNER_TEMP/reports"
+          kubectl -n "$AUDIT_NAMESPACE" logs job/kube-hunter > "$reports/kube-hunter.log" || true
+          # The report is the last line of output that is a JSON object.
+          grep '^{' "$reports/kube-hunter.log" | tail -n 1 > "$reports/kube-hunter.json" || true
+          cat "$reports/kube-hunter.log"
+          $ok && jq -e '.vulnerabilities' "$reports/kube-hunter.json" > /dev/null
+
+      - name: Summarise kube-hunter
+        run: |
+          report="$RUNNER_TEMP/reports/kube-hunter.json"
+          {
+            echo "## kube-hunter (pod mode)"
+            echo
+            echo "Findings come from probing kind's API server, kubelet and the audit pod's own token. They don't fail this workflow."
+            echo
+            jq -r '"**\(.vulnerabilities | length) vulnerabilities** across \(.nodes | length) nodes and \(.services | length) services"' "$report"
+            echo
+            jq -r '.vulnerabilities | group_by(.severity) | map("\(.[0].severity): \(length)") | join(" · ")' "$report"
+            echo
+            echo "| ID | Severity | Category | Vulnerability | Location |"
+            echo "|---|---|---|---|---|"
+            jq -r '.vulnerabilities[] | "| \(.vid) | \(.severity) | \(.category) | \(.vulnerability) | \(.location) |"' "$report"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The only gate: the pods our Tanka manifests create must carry the
+      # hardening they promise, and the namespace must enforce the baseline
+      # Pod Security Standard. The PostgreSQL deployment is a CI fixture, not
+      # part of the stack, so it isn't checked.
+      - name: Check our workloads
+        run: |
+          reports="$RUNNER_TEMP/reports"
+          echo "The namespace enforces the baseline Pod Security Standard:"
+          kubectl get namespace vulnobs -o json \
+            | jq -e '.metadata.labels["pod-security.kubernetes.io/enforce"] == "baseline"'
+
+          kubectl -n vulnobs get pods -l 'app in (grafana,vulnobs-storage,vulnobs-scan)' -o json > "$reports/workload-pods.json"
+          jq -r '.items[] | .metadata.name' "$reports/workload-pods.json"
+          jq -e '[.items[].metadata.labels.app] | unique == ["grafana", "vulnobs-scan", "vulnobs-storage"]' "$reports/workload-pods.json" > /dev/null
+
+          jq -r '
+            .items[] as $pod
+            | ($pod.spec.securityContext.seccompProfile.type // "") as $podSeccomp
+            | ([$pod.spec.initContainers // [] | .[]] + $pod.spec.containers)[] as $c
+            | ($c.securityContext // {}) as $sc
+            | [
+                (if $sc.privileged == true then "privileged" else empty end),
+                (if $sc.allowPrivilegeEscalation != false then "allowPrivilegeEscalation is not false" else empty end),
+                (if (($sc.capabilities.drop // []) | index("ALL")) == null then "capabilities do not drop ALL" else empty end),
+                (if ($sc.seccompProfile.type // $podSeccomp) != "RuntimeDefault" then "no RuntimeDefault seccomp profile" else empty end),
+                (if ($c.resources.limits.memory // "") == "" then "no memory limit" else empty end),
+                (if ($c.resources.requests.cpu // "") == "" then "no CPU request" else empty end),
+                (if $pod.spec.hostPID or $pod.spec.hostNetwork or $pod.spec.hostIPC then "shares a host namespace" else empty end),
+                (if $pod.metadata.labels.app != "vulnobs-scan" and $pod.spec.automountServiceAccountToken != false
+                  then "mounts a service account token it does not need" else empty end)
+              ][]
+            | "\($pod.metadata.name)/\($c.name): \(.)"
+          ' "$reports/workload-pods.json" > "$reports/workload-violations.txt"
+
+          echo "Restricted Pod Security Standard (informational; the Trivy step runs as root):"
+          kubectl label --dry-run=server --overwrite namespace vulnobs \
+            pod-security.kubernetes.io/enforce=restricted > /dev/null 2> "$reports/restricted-warnings.txt" || true
+          cat "$reports/restricted-warnings.txt"
+
+          {
+            echo "## Vulnobs workloads"
+            echo
+            if [ -s "$reports/workload-violations.txt" ]; then
+              echo "**Hardening violations:**"
+              echo
+              sed 's/^/- /' "$reports/workload-violations.txt"
+            else
+              echo "All Grafana, storage API and scan pods are hardened (no privilege escalation, all capabilities dropped, RuntimeDefault seccomp, resource limits, no unneeded API token), and the namespace enforces the **baseline** Pod Security Standard."
+            fi
+            echo
+            echo "<details><summary>What enforcing <b>restricted</b> would reject</summary>"
+            echo
+            echo '```'
+            cat "$reports/restricted-warnings.txt"
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s "$reports/workload-violations.txt" ]; then
+            cat "$reports/workload-violations.txt"
+            exit 1
+          fi
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cluster-security-reports
+          path: ${{ runner.temp }}/reports/
+          if-no-files-found: warn
+
+      - name: Show cluster state
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl -n vulnobs describe pods
+          kubectl -n "$AUDIT_NAMESPACE" describe pods || true
+          kubectl -n vulnobs logs deployment/grafana --tail=300 || true
+          kubectl -n vulnobs logs deployment/vulnobs-storage --tail=200 || true
+          kubectl -n vulnobs logs job/scan-audit --all-containers --prefix --tail=200 || true
+          for job in kube-bench kube-hunter; do
+            kubectl -n "$AUDIT_NAMESPACE" logs "job/$job" --all-containers --prefix --tail=200 || true
+          done

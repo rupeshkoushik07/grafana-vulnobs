@@ -11,10 +11,34 @@
     local image = '%s:%s' % [params.imageRepository, params.imageTag],
     local appAPI = 'http://grafana.%s.svc:3000/api/plugins/%s/resources' % [ns, appID],
 
+    // Pod hardening (CIS Kubernetes Benchmark section 5, Pod Security
+    // Standards). Every container drops all capabilities and can't gain
+    // privileges; every pod uses the container runtime's default seccomp
+    // profile. Containers whose image runs as a non-root user also say so, so
+    // the kubelet refuses to start them as root.
+    local podSecurity = { seccompProfile: { type: 'RuntimeDefault' } },
+    local containerSecurity = {
+      allowPrivilegeEscalation: false,
+      capabilities: { drop: ['ALL'] },
+    },
+    // The Vulnobs image runs as Grafana's numeric user 472.
+    local nonRoot = containerSecurity { runAsNonRoot: true },
+
     namespace: {
       apiVersion: 'v1',
       kind: 'Namespace',
-      metadata: { name: ns },
+      metadata: {
+        name: ns,
+        // Pod Security Admission: refuse pods that break the baseline
+        // standard, and warn about (and audit) anything short of restricted.
+        // The Trivy scan step runs as root (the upstream image's default
+        // user), which baseline allows but restricted doesn't.
+        labels: {
+          'pod-security.kubernetes.io/enforce': 'baseline',
+          'pod-security.kubernetes.io/warn': 'restricted',
+          'pod-security.kubernetes.io/audit': 'restricted',
+        },
+      },
     },
 
     grafana: {
@@ -41,8 +65,10 @@
           template: {
             metadata: { labels: { app: 'grafana' } },
             spec: {
+              // Grafana doesn't talk to the Kubernetes API.
+              automountServiceAccountToken: false,
               // Let the grafana user (uid/gid 472 in the image) write the volume.
-              securityContext: { fsGroup: 472 },
+              securityContext: podSecurity { fsGroup: 472 },
               containers: [{
                 name: 'grafana',
                 image: image,
@@ -58,6 +84,13 @@
                 ],
                 volumeMounts: [{ name: 'data', mountPath: '/var/lib/grafana' }],
                 readinessProbe: { httpGet: { path: '/api/health', port: 3000 }, initialDelaySeconds: 10 },
+                // Grafana also writes outside its data volume (logs, plugin
+                // and temp files), so its root filesystem stays writable.
+                securityContext: nonRoot,
+                resources: {
+                  requests: { cpu: '100m', memory: '256Mi' },
+                  limits: { memory: '1Gi' },
+                },
               }],
               volumes: [{ name: 'data', persistentVolumeClaim: { claimName: 'grafana-data' } }],
             },
@@ -87,6 +120,9 @@
           template: {
             metadata: { labels: { app: 'vulnobs-storage' } },
             spec: {
+              // The storage API doesn't talk to the Kubernetes API.
+              automountServiceAccountToken: false,
+              securityContext: podSecurity,
               containers: [{
                 name: 'storage-api',
                 image: image,
@@ -103,6 +139,13 @@
                   value: std.toString(params.storageRetentionDays),
                 }],
                 readinessProbe: { httpGet: { path: '/healthz', port: 8080 }, initialDelaySeconds: 5 },
+                // A single Go binary that only talks to PostgreSQL over the
+                // network and writes no files.
+                securityContext: nonRoot { readOnlyRootFilesystem: true },
+                resources: {
+                  requests: { cpu: '50m', memory: '64Mi' },
+                  limits: { memory: '256Mi' },
+                },
               }],
             },
           },
@@ -212,20 +255,30 @@
                   restartPolicy: 'Never',
                   serviceAccountName: 'vulnobs-scanner',
                   automountServiceAccountToken: false,
+                  securityContext: podSecurity,
                   initContainers: [
                     {
                       name: 'discover',
                       image: image,
                       command: ['vulnobs-discover'],
                       args: [
-                        '-exclude-namespaces', std.join(',', params.excludeNamespaces),
-                        '-targets', '/work/targets.tsv',
-                        '-prune', '/work/prune.json',
+                        '-exclude-namespaces',
+                        std.join(',', params.excludeNamespaces),
+                        '-targets',
+                        '/work/targets.tsv',
+                        '-prune',
+                        '/work/prune.json',
                       ],
                       volumeMounts: [
                         { name: 'work', mountPath: '/work' },
                         { name: 'kube-api', mountPath: '/var/run/secrets/kubernetes.io/serviceaccount', readOnly: true },
                       ],
+                      // Writes only to the scratch volume.
+                      securityContext: nonRoot { readOnlyRootFilesystem: true },
+                      resources: {
+                        requests: { cpu: '50m', memory: '64Mi' },
+                        limits: { memory: '256Mi' },
+                      },
                     },
                     {
                       name: 'trivy',
@@ -253,6 +306,17 @@
                         echo "scanned $ok of $n images ($failed failed)"
                       |||],
                       volumeMounts: [{ name: 'work', mountPath: '/work' }],
+                      // The upstream Trivy image runs as root and Trivy writes
+                      // temporary files outside its cache dir, so neither
+                      // runAsNonRoot nor a read-only root filesystem is set.
+                      // Root without capabilities can still write the scratch
+                      // volume (an emptyDir, mode 0777).
+                      securityContext: containerSecurity,
+                      // Large images need memory to scan.
+                      resources: {
+                        requests: { cpu: '250m', memory: '512Mi' },
+                        limits: { memory: '2Gi' },
+                      },
                     },
                   ],
                   containers: [{
@@ -276,6 +340,18 @@
                       echo
                     |||],
                     volumeMounts: [{ name: 'work', mountPath: '/work' }],
+                    // curlimages/curl names its user (curl_user, uid 100)
+                    // rather than its uid, so the kubelet needs the uid to
+                    // verify it isn't root. It only reads the scratch volume.
+                    securityContext: containerSecurity {
+                      runAsNonRoot: true,
+                      runAsUser: 100,
+                      readOnlyRootFilesystem: true,
+                    },
+                    resources: {
+                      requests: { cpu: '10m', memory: '16Mi' },
+                      limits: { memory: '64Mi' },
+                    },
                   }],
                   volumes: [
                     { name: 'work', emptyDir: {} },

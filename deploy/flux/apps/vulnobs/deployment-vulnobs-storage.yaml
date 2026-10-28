@@ -16,6 +16,7 @@ spec:
       labels:
         app: vulnobs-storage
     spec:
+      automountServiceAccountToken: false
       containers:
       - command:
         - /usr/local/bin/vulnobs-storage
@@ -42,3 +43,19 @@ spec:
             path: /healthz
             port: 8080
           initialDelaySeconds: 5
+        resources:
+          limits:
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
