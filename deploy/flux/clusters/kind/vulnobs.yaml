@@ -1,0 +1,35 @@
+# Flux watches this repository and applies the manifests exported from the
+# Tanka environment (deploy/flux/apps/vulnobs, see tools/export-flux-manifests.sh).
+#
+# The vulnobs-storage Secret is NOT in Git: create it out of band before the
+# first reconcile (deploy/flux/README.md).
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: vulnobs
+  namespace: flux-system
+spec:
+  interval: 5m
+  url: https://github.com/rupeshkoushik07/grafana-vulnobs
+  ref:
+    branch: main
+  # Only fetch what the Kustomization below needs.
+  ignore: |
+    /*
+    !/deploy/
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: vulnobs
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 1m
+  timeout: 10m
+  sourceRef:
+    kind: GitRepository
+    name: vulnobs
+  path: ./deploy/flux/apps/vulnobs
+  prune: true
+  wait: true
