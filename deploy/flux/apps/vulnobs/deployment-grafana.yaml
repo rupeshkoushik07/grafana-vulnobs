@@ -18,6 +18,7 @@ spec:
       labels:
         app: grafana
     spec:
+      automountServiceAccountToken: false
       containers:
       - env:
         - name: GF_AUTH_ANONYMOUS_ENABLED
@@ -41,11 +42,25 @@ spec:
             path: /api/health
             port: 3000
           initialDelaySeconds: 10
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          runAsNonRoot: true
         volumeMounts:
         - mountPath: /var/lib/grafana
           name: data
       securityContext:
         fsGroup: 472
+        seccompProfile:
+          type: RuntimeDefault
       volumes:
       - name: data
         persistentVolumeClaim:
