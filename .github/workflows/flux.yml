@@ -1,0 +1,205 @@
+name: Flux
+
+# GitOps path: checks that deploy/flux/apps/vulnobs matches the Tanka
+# environment, then lets Flux deploy that export, from the commit under test, to
+# a throwaway kind cluster. kubernetes.yml covers the functional tests.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - deploy/**
+      - tools/export-flux-manifests.sh
+      - .github/workflows/flux.yml
+  push:
+    branches: [main]
+    paths:
+      - deploy/**
+      - tools/export-flux-manifests.sh
+      - .github/workflows/flux.yml
+
+permissions:
+  contents: read
+
+env:
+  TANKA_VERSION: v0.39.1
+  FLUX_VERSION: 2.10.0
+
+jobs:
+  export:
+    name: Flux manifests are up to date
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: rupesh-vulnobs-app/go.mod
+          cache: false
+
+      # Tanka publishes no checksums for its release binaries. Building from
+      # source verifies it against the Go checksum database instead.
+      - name: Install Tanka
+        run: go install "github.com/grafana/tanka/cmd/tk@${TANKA_VERSION}"
+
+      - name: Regenerate and compare
+        run: |
+          tools/export-flux-manifests.sh
+          git add --intent-to-add deploy/flux/apps/vulnobs
+          if ! git diff --exit-code -- deploy/flux/apps/vulnobs; then
+            echo "::error::deploy/flux/apps/vulnobs is stale. Run tools/export-flux-manifests.sh and commit the result."
+            exit 1
+          fi
+
+  deploy:
+    name: Deploy with Flux
+    needs: export
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      # Build the image from this commit, so pull requests are tested too.
+      - name: Build image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: vulnobs:ci
+          cache-from: type=gha
+
+      - name: Create kind cluster
+        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          cluster_name: vulnobs
+
+      - name: Load image into kind
+        run: kind load docker-image vulnobs:ci --name vulnobs
+
+      - name: Install Flux CLI
+        run: |
+          base="https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}"
+          tarball="flux_${FLUX_VERSION}_linux_amd64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$base/$tarball"
+          curl -fsSLO "$base/flux_${FLUX_VERSION}_checksums.txt"
+          grep " ${tarball}\$" "flux_${FLUX_VERSION}_checksums.txt" | sha256sum -c -
+          mkdir -p flux-bin
+          tar -xzf "$tarball" -C flux-bin flux
+          echo "$RUNNER_TEMP/flux-bin" >> "$GITHUB_PATH"
+
+      - name: Install Flux
+        run: |
+          flux check --pre
+          flux install --components=source-controller,kustomize-controller
+          flux check --components=source-controller,kustomize-controller
+
+      - name: Prepare PostgreSQL and storage credentials
+        run: |
+          kubectl create namespace vulnobs
+          kubectl -n vulnobs create deployment postgres \
+            --image=postgres:17-alpine \
+            --port=5432
+          kubectl -n vulnobs set env deployment/postgres \
+            POSTGRES_DB=vulnobs \
+            POSTGRES_USER=vulnobs \
+            POSTGRES_PASSWORD=vulnobs-test
+          kubectl -n vulnobs expose deployment postgres --port=5432
+          kubectl -n vulnobs rollout status deployment/postgres --timeout=5m
+          for _ in $(seq 1 60); do
+            if kubectl -n vulnobs exec deployment/postgres -- psql -U vulnobs -d vulnobs -c 'SELECT 1' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          kubectl -n vulnobs exec deployment/postgres -- psql -U vulnobs -d vulnobs -v ON_ERROR_STOP=1 -c "CREATE TABLE vulnobs_assets (tenant_id TEXT NOT NULL, asset TEXT NOT NULL, source TEXT NOT NULL, posture JSONB NOT NULL, PRIMARY KEY (tenant_id, asset)); INSERT INTO vulnobs_assets (tenant_id, asset, source, posture) VALUES ('ci', 'expired-fixture', 'cluster', '{\"asset\":\"expired-fixture\",\"source\":\"cluster\",\"lastScanned\":\"2024-01-01T00:00:00Z\",\"counts\":{},\"kev\":0,\"total\":0}');"
+          signing_key="$(openssl rand -hex 32)"
+          storage_token="$(VULNOBS_TOKEN_SIGNING_KEY="$signing_key" python3 tools/create-storage-token.py --tenant-id ci --lifetime-days 1)"
+          kubectl -n vulnobs create secret generic vulnobs-storage \
+            --from-literal=database-url='postgres://vulnobs:vulnobs-test@postgres:5432/vulnobs?sslmode=disable' \
+            --from-literal=token-signing-key="$signing_key" \
+            --from-literal=storage-token="$storage_token"
+
+      # Apply the committed cluster config with two CI-only patches:
+      # - the GitRepository tracks the ref under test instead of main. For pull
+      #   requests that is refs/pull/<n>/head, which GitHub serves from this
+      #   repository for forks too; the revision Flux fetched is then checked
+      #   against the expected commit.
+      # - the Kustomization swaps the published image for the one built above.
+      - name: Point Flux at this commit
+        env:
+          REF: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/head', github.event.pull_request.number) || github.ref }}
+          SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          overlay="$RUNNER_TEMP/flux-ci"
+          mkdir -p "$overlay"
+          cp deploy/flux/clusters/kind/vulnobs.yaml "$overlay/"
+          cat > "$overlay/kustomization.yaml" <<EOF
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          resources:
+            - vulnobs.yaml
+          patches:
+            - target: {kind: GitRepository, name: vulnobs}
+              patch: |
+                - op: replace
+                  path: /spec/ref
+                  value: {name: "${REF}"}
+            - target: {kind: Kustomization, name: vulnobs}
+              patch: |
+                - op: add
+                  path: /spec/images
+                  value:
+                    - name: ghcr.io/rupeshkoushik07/grafana-vulnobs
+                      newName: vulnobs
+                      newTag: ci
+          EOF
+          kubectl kustomize "$overlay" | tee "$RUNNER_TEMP/flux-ci.yaml"
+          kubectl apply -f "$RUNNER_TEMP/flux-ci.yaml"
+
+          kubectl -n flux-system wait gitrepository/vulnobs --for=condition=Ready --timeout=5m
+          revision="$(kubectl -n flux-system get gitrepository/vulnobs -o jsonpath='{.status.artifact.revision}')"
+          echo "Flux fetched $revision"
+          case "$revision" in
+            *"sha1:${SHA}") ;;
+            *) echo "::error::Flux fetched $revision, expected $SHA (was the branch updated during the run?)"; exit 1 ;;
+          esac
+
+      - name: Wait for Flux to deploy
+        run: |
+          flux reconcile kustomization vulnobs --timeout=15m
+          kubectl -n flux-system wait kustomization/vulnobs --for=condition=Ready --timeout=15m
+          flux get kustomizations
+          kubectl -n vulnobs rollout status deployment/vulnobs-storage --timeout=5m
+          kubectl -n vulnobs rollout status deployment/grafana --timeout=5m
+
+          echo "The CI image is running:"
+          kubectl -n vulnobs get deployment grafana -o jsonpath='{.spec.template.spec.containers[0].image}' | tee /dev/stderr | grep -qx 'vulnobs:ci'
+
+          expired_records=$(kubectl -n vulnobs exec deployment/postgres -- psql -At -U vulnobs -d vulnobs -c "SELECT count(*) FROM vulnobs_assets WHERE tenant_id='ci' AND asset='expired-fixture'")
+          test "$expired_records" = 0
+
+      - name: Grafana is healthy
+        run: |
+          kubectl -n vulnobs port-forward svc/grafana 3000:3000 > "$RUNNER_TEMP/port-forward.log" 2>&1 &
+          curl -fsS --retry 30 --retry-delay 2 --retry-all-errors http://127.0.0.1:3000/api/health | jq -e '.database == "ok"'
+
+      - name: Show cluster state
+        if: failure()
+        run: |
+          flux get all -A || true
+          flux logs --all-namespaces --level=error || true
+          kubectl -n flux-system describe gitrepository/vulnobs kustomization/vulnobs || true
+          kubectl get pods -A
+          kubectl -n vulnobs describe pods
+          kubectl -n vulnobs logs deployment/grafana --tail=300 || true
+          kubectl -n vulnobs logs deployment/vulnobs-storage --tail=200 || true

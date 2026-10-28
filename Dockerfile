@@ -16,7 +16,7 @@ WORKDIR /src/rupesh-vulnobs-app
 RUN npm run build
 
 # --- Backend: Go plugin binaries for the target architecture ---
-FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine@sha256:ce864e7223ac17b1775e6fd0b4c0db580c2eb50e7953a427916379e4b92a1628 AS backend
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS backend
 ARG TARGETARCH
 ENV CGO_ENABLED=0 \
     GOFLAGS=-mod=readonly \
