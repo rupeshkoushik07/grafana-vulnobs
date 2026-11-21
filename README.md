@@ -94,8 +94,26 @@ live OSV, and findings are ranked by CISA KEV and EPSS, so actively exploited CV
 
 ![Scan results for a CycloneDX SBOM, with actively exploited Log4Shell CVEs ranked first](docs/screenshots/scan-cyclonedx.png)
 
+**Workloads:** with `showWorkloads` on, the Assets page lists what is running in the cluster
+before anything has been scanned:
+
+![Assets page listing six deployments, each marked not scanned yet, with a Scan now button](docs/screenshots/workloads-not-scanned.png)
+
+**Scan now** (with `scanNow` on) starts the scan job from the page. About a minute later every
+workload has its findings, most urgent first:
+
+![Assets page after a scan, each deployment with severity counts and actively exploited findings](docs/screenshots/workloads-scanned.png)
+
 <details>
 <summary>More screenshots</summary>
+
+**A scan in progress**, started with Scan now:
+
+![Assets page showing the scan job running](docs/screenshots/scan-now-running.png)
+
+**A workload's image**, with the findings from its CycloneDX SBOM:
+
+![Findings for the Log4Shell test application, six actively exploited](docs/screenshots/workload-findings.png)
 
 **Assets:** the latest scan of every image running in the cluster (and anything else pushed
 to `/ingest`), most urgent first:
