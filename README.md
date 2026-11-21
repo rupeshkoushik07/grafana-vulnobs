@@ -69,6 +69,24 @@ available after Grafana restarts. Reports uploaded on the Scan page are not stor
 - **Check what you're running:** the image is signed by this repo's pipeline; see
   [Verify an image](#verify-an-image).
 
+### Or try the whole thing on a local Kubernetes cluster
+
+With Docker, [kind](https://kind.sigs.k8s.io), `kubectl` and
+[Tanka](https://tanka.dev) installed (`brew install kind kubectl tanka` on macOS), one
+script builds the image from your checkout, creates a cluster, deploys Grafana with the
+cluster scan, the **Scan now** button and the workloads view, and starts a few deliberately
+old images for it to find:
+
+```bash
+tools/kind-demo.sh up               # build, create the cluster, deploy everything
+tools/kind-demo.sh open             # Grafana on http://localhost:3000
+tools/kind-demo.sh add-vulnerable   # deploy a Log4Shell test app and watch it appear
+tools/kind-demo.sh down             # delete the cluster
+```
+
+Open **More apps → Vulnobs → Assets**: the workloads are listed as *not scanned yet*. Click
+**Scan now** and, about a minute later, each one has its findings.
+
 ## Screenshots
 
 **Scan:** upload a Trivy, Grype, CycloneDX or SPDX report. Every package is matched against
@@ -197,7 +215,9 @@ flowchart TB
   images of every running pod through the Kubernetes API, pins each to the digest that pod
   runs, writes a CycloneDX SBOM of it with Trivy, and pushes the SBOMs to `/ingest` with the
   namespaces that run them. Trivy only takes the inventory; the app does the matching. With
-  `scanNow=true` the Assets page has a **Scan now** button that starts the job on demand. The app stores the latest
+  `scanNow=true` the Assets page has a **Scan now** button that starts the job on demand,
+  and with `showWorkloads=true` it lists what is running in the cluster before it has been
+  scanned. The app stores the latest
   prioritized posture per image in the authenticated storage API backed by PostgreSQL, so it
   survives Grafana restarts. `/prune` drops images that are no longer running. The **Assets**
   page shows the result. Anything else, such as a CI job, can push to `/ingest` too.

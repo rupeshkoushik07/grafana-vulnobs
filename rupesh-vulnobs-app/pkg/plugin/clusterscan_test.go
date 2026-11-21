@@ -25,6 +25,10 @@ type fakeKube struct {
 	created []kubeJob
 	forbid  bool
 	auth    []string
+	// cronJob replaces the default CronJob body, when set.
+	cronJob string
+	// pods serves the pod list, when the test has one.
+	pods func(http.ResponseWriter, *http.Request) bool
 }
 
 const cronJobJSON = `{
@@ -50,9 +54,16 @@ func (f *fakeKube) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"kind":"Status","message":"cronjobs.batch \"vulnobs-scan\" is forbidden","code":403}`)
 		return
 	}
+	if f.pods != nil && f.pods(w, r) {
+		return
+	}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/apis/batch/v1/namespaces/vulnobs/cronjobs/vulnobs-scan":
-		_, _ = io.WriteString(w, cronJobJSON)
+		body := cronJobJSON
+		if f.cronJob != "" {
+			body = f.cronJob
+		}
+		_, _ = io.WriteString(w, body)
 	case r.Method == http.MethodGet && r.URL.Path == "/apis/batch/v1/namespaces/vulnobs/jobs":
 		_ = json.NewEncoder(w).Encode(map[string]any{"items": f.jobs})
 	case r.Method == http.MethodPost && r.URL.Path == "/apis/batch/v1/namespaces/vulnobs/jobs":
