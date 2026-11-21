@@ -51,8 +51,8 @@
         "path": "img/screenshots/scan-cyclonedx.png"
       },
       {
-        "name": "Scan Trivy",
-        "path": "img/screenshots/scan-trivy.png"
+        "name": "Scan Cyclonedx Image",
+        "path": "img/screenshots/scan-cyclonedx-image.png"
       },
       {
         "name": "Search Cve",

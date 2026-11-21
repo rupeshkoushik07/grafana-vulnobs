@@ -132,9 +132,9 @@ to `/ingest`), most urgent first:
 
 ![Lookup of CVE-2021-44228](docs/screenshots/search-cve.png)
 
-**Scan** a Trivy report (OS packages are skipped):
+**Scan** a CycloneDX SBOM of a container image (OS packages are skipped):
 
-![Scan results for a Trivy report](docs/screenshots/scan-trivy.png)
+![Scan results for the CycloneDX SBOM of a container image, with 54 OS packages skipped](docs/screenshots/scan-cyclonedx-image.png)
 
 **Dashboard** panels backed by the data source:
 
