@@ -89,6 +89,14 @@ Open **More apps → Vulnobs → Assets**: the workloads are listed as *not scan
 
 ## Screenshots
 
+**From a deployment to its vulnerabilities, without running a scanner by hand:** a workload is
+deployed with `kubectl`, shows up on the Assets page as *not scanned yet*, and **Scan now**
+fills in its findings. Needs `showWorkloads` and `scanNow` (see the Tanka README).
+
+![Terminal deploying payments-api with kubectl, then the Assets page listing it as not scanned yet, Scan now being clicked, and the findings appearing](docs/screenshots/cluster-scan-now.gif)
+
+<sub>Recorded against a local kind cluster. The scan took 72 seconds; that wait is played at 4× speed.</sub>
+
 **Scan:** upload a Trivy, Grype, CycloneDX or SPDX report. Every package is matched against
 live OSV, and findings are ranked by CISA KEV and EPSS, so actively exploited CVEs come first.
 
