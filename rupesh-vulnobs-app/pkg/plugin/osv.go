@@ -100,6 +100,43 @@ func (a *App) osvQueryPackage(ctx context.Context, ecosystem, pkg, version strin
 	return out.Vulns, nil
 }
 
+// osvQueryBatch asks OSV, in one request, which of the packages have any known
+// vulnerability. The answer is index-aligned with pkgs. The batch endpoint
+// returns only vulnerability ids, so the caller still queries the affected
+// packages one by one for details.
+func (a *App) osvQueryBatch(ctx context.Context, pkgs []pkgRef) ([]bool, error) {
+	type query struct {
+		Package map[string]string `json:"package"`
+		Version string            `json:"version,omitempty"`
+	}
+	queries := make([]query, len(pkgs))
+	for i, p := range pkgs {
+		queries[i] = query{Package: map[string]string{"name": p.Name, "ecosystem": p.Ecosystem}, Version: p.Version}
+	}
+	raw, err := a.osvPost(ctx, "/v1/querybatch", map[string]any{"queries": queries})
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Results []struct {
+			Vulns []struct {
+				ID string `json:"id"`
+			} `json:"vulns"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode OSV batch response: %w", err)
+	}
+	if len(out.Results) != len(pkgs) {
+		return nil, fmt.Errorf("OSV answered %d of %d batch queries", len(out.Results), len(pkgs))
+	}
+	affected := make([]bool, len(pkgs))
+	for i, r := range out.Results {
+		affected[i] = len(r.Vulns) > 0
+	}
+	return affected, nil
+}
+
 // osvGetVuln fetches a single vulnerability by its id (OSV, GHSA or CVE id).
 func (a *App) osvGetVuln(ctx context.Context, id string) (*osvVuln, error) {
 	if id == "" || strings.ContainsAny(id, "/\\?#%") {

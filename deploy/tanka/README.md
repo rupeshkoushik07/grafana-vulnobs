@@ -8,10 +8,13 @@ Kubernetes:
 - **Vulnobs storage API**, which authenticates requests and stores tenant-isolated asset postures
   in PostgreSQL. It verifies signed, expiring tenant credentials and purges records older than
   the configured retention period. PostgreSQL can be self-managed or managed externally.
-- A **scan CronJob** that finds every image running in the cluster, scans each one with
-  Trivy, and pushes the reports to the app's `/ingest` endpoint. The results show up on the
-  app's **Assets** page, ranked by exploit risk, and feed an alert rule that fires for any
-  image with an actively exploited (CISA KEV) vulnerability.
+- A **scan CronJob** that finds every image running in the cluster, writes a CycloneDX SBOM
+  of each one with Trivy (pinned to the digest the pods actually run), and pushes the SBOMs
+  to the app's `/ingest` endpoint, which matches the packages against OSV. The results show
+  up on the app's **Assets** page, ranked by exploit risk, and feed an alert rule that fires
+  for any image with an actively exploited (CISA KEV) vulnerability.
+- Optionally, a **Scan now** button on the Assets page that starts that job on demand
+  instead of waiting for the schedule.
 - Optionally, a **Kyverno policy** that refuses to run the Vulnobs image unless its signature
   and SBOM attestation verify.
 
@@ -56,7 +59,8 @@ deploy/tanka/
 | Deployment, Service | `vulnobs-storage` | authenticated API in front of the PostgreSQL asset store |
 | ServiceAccount | `vulnobs-scanner` | identity of the scan job |
 | ClusterRole, ClusterRoleBinding | `vulnobs-scanner` | lets the scan job **list pods**, nothing else |
-| CronJob | `vulnobs-scan` | discover images → Trivy scan → push to `/ingest` → prune (see below) |
+| CronJob | `vulnobs-scan` | discover images → CycloneDX SBOM (Trivy) → push to `/ingest` → prune (see below) |
+| ServiceAccount, Role, RoleBinding | `vulnobs-grafana`, `vulnobs-scan-now` | only with `scanNow=true` — lets the app start the scan job (see below) |
 | ClusterPolicy | `vulnobs-verify-image` | only with `verifyImageSignatures: true` — see below |
 
 ## How the cluster scan works
@@ -67,9 +71,18 @@ Each run of `vulnobs-scan` is one pod with three steps sharing a scratch volume:
    namespace except `excludeNamespaces`, collects the images of pods that haven't finished,
    and notes which namespaces run each one. It is the only step that gets the service
    account token, and that token can only list pods.
-2. **trivy** scans each image. An image it can't pull (for example from a private registry
-   it has no credentials for) is logged and skipped.
-3. **push** sends each report to the app's `/ingest`, labelled with the image's namespaces
+
+   Each image is **pinned to the digest its containers run**, as reported by the kubelet
+   (`status.containerStatuses[].imageID`), so the SBOM describes what is deployed even if
+   the tag has moved since the pod started. The asset keeps the name from the pod spec
+   (`python:3.12`). If pods run one tag at two different digests, each digest becomes its own
+   asset (`python:3.12@sha256:…`). An image with no registry digest, such as one loaded
+   straight into a kind node, is read by its tag.
+2. **trivy** writes a CycloneDX SBOM of each image: the list of packages and versions, with
+   no findings. It doesn't match vulnerabilities, so it downloads no vulnerability database.
+   An image it can't pull (for example from a private registry it has no credentials for) is
+   logged and skipped.
+3. **push** sends each SBOM to the app's `/ingest`, labelled with the image's namespaces
    and `source=cluster`, then calls `/prune` to remove cluster assets that are no longer
    running. Images that were found but failed to scan are kept, so a transient failure
    doesn't delete earlier results. Assets pushed by anything else are never pruned.
@@ -131,6 +144,40 @@ kubectl -n vulnobs create job scan-now --from=cronjob/vulnobs-scan
 kubectl -n vulnobs logs -f job/scan-now --all-containers --prefix
 ```
 
+### Scan now, from the Assets page
+
+Deploy with `scanNow=true` and the Assets page gets a **Scan now** button that does the
+same thing: it starts one run of `vulnobs-scan`, shows it running, and refreshes the list
+when it finishes. Editors and admins can use it. A second click while a run is going is
+refused, and the CronJob's own `concurrencyPolicy: Forbid` skips a scheduled run that would
+overlap.
+
+```bash
+tk apply environments/default --tla-code scanNow=true
+```
+
+This is off by default because of what it takes. Grafana otherwise has no Kubernetes
+credentials at all. With `scanNow=true` its pod gets a short-lived token for the
+`vulnobs-grafana` service account, which may, in the `vulnobs` namespace only:
+
+- read the `vulnobs-scan` CronJob,
+- list jobs, and
+- create jobs.
+
+Kubernetes has no "run this CronJob" permission, only "create jobs", and whoever can create
+a job in a namespace can run any pod there, including one that mounts that namespace's
+secrets (the storage credentials) or uses the scanner's service account. So with this on,
+someone who takes over Grafana can reach those; with it off, they get nothing from
+Kubernetes. Turn it on where that trade is acceptable, and not while Grafana is reachable
+by people you wouldn't hand that to (see the note on anonymous access below).
+
+Without `scanNow` the button is simply not shown. If the service account is mounted but
+the Role is missing, the page says so instead of failing silently.
+
+The app's settings (`jsonData`) take three optional overrides for other layouts:
+`scanCronJob` (default `vulnobs-scan`), `kubernetesNamespace` (default: the service
+account's) and `kubernetesApiServer` (default: the in-cluster address).
+
 The alert rule is in **Alerting → Alert rules → Vulnobs**. It sends notifications to
 Grafana's default contact point; point that at Slack, email, PagerDuty or wherever you want
 them.
@@ -144,6 +191,7 @@ editing any file, for example `tk apply environments/default --tla-str imageTag=
 | --- | --- | --- |
 | `imageRepository` | `ghcr.io/rupeshkoushik07/grafana-vulnobs` | Vulnobs image |
 | `imageTag` | `main` | image tag (`main`, a release version like `0.3.0`, or `sha-<commit>`) |
+| `scanNow` | `false` | give the app what its **Scan now** button needs (`--tla-code scanNow=true`); read [Scan now](#scan-now-from-the-assets-page) first |
 
 Set these in `environments/default/main.jsonnet`:
 
@@ -151,7 +199,7 @@ Set these in `environments/default/main.jsonnet`:
 | --- | --- | --- |
 | `excludeNamespaces` | `kube-system`, `kube-public`, `kube-node-lease`, `local-path-storage` | namespaces whose pods are not scanned |
 | `scanSchedule` | `0 * * * *` | scan cadence (cron) |
-| `trivyImage` | `ghcr.io/aquasecurity/trivy:0.74.0` | scanner image |
+| `trivyImage` | `ghcr.io/aquasecurity/trivy:0.74.0` | image of the step that writes the SBOMs |
 | `storageSize` | `1Gi` | size of Grafana's data volume |
 | `storageClassName` | `null` | StorageClass for the volume; `null` uses the cluster default |
 | `storageRetentionDays` | `90` | age in days before stored scan postures are deleted (1–3650) |
@@ -192,8 +240,10 @@ image built from the pull request, so it runs with the policy off.
   covers the whole image, plugins included; Grafana's own plugin signing is separate.
 - The deployment enables anonymous access with the Editor role, which is what lets the scan
   job push without credentials. Anyone who can reach Grafana can therefore push or prune
-  assets. Keep the Service internal, or put authentication in front of it, in a shared
-  cluster.
+  assets, and with `scanNow=true` start a cluster scan. Keep the Service internal, or put
+  authentication in front of it, in a shared cluster.
+- A scan checks up to 5,000 packages per image. The app first asks OSV in batches which of
+  them have any known vulnerability, then fetches details only for those.
 - The app matches each image's language packages (npm, PyPI, Go, Maven, …) against OSV. OS
   packages such as Debian or Alpine ones are counted but not matched.
 - Scan postures contain normalized metadata and findings, not the original uploaded report.

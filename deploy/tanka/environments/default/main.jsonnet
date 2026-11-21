@@ -8,6 +8,10 @@ function(
   // by .github/workflows/image.yml in this repo.
   imageRepository='ghcr.io/rupeshkoushik07/grafana-vulnobs',
   imageTag='main',
+  // Give the app's "Scan now" button what it needs to start the cluster scan.
+  // Off by default: read the note at scanNow in lib/vulnobs/main.libsonnet.
+  //   tk apply environments/default --tla-code scanNow=true
+  scanNow=false,
 )
   vulnobs.new({
     namespace: 'vulnobs',
@@ -29,5 +33,6 @@ function(
     // Scan every image running in the cluster, except in these namespaces.
     excludeNamespaces: ['kube-system', 'kube-public', 'kube-node-lease', 'local-path-storage'],
     scanSchedule: '0 * * * *',  // hourly
+    scanNow: scanNow,
     trivyImage: 'ghcr.io/aquasecurity/trivy:0.74.0',
   })

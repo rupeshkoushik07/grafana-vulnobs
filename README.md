@@ -194,8 +194,10 @@ flowchart TB
   (`KEV > EPSS > severity`), so a CRITICAL-but-unexploited CVE can rank *below* a
   MODERATE-but-exploited one. `/enrich` exposes this engine on its own.
 - **Continuous cluster scanning:** a standalone scanner CronJob, deployed via [Tanka](./deploy/tanka), lists the
-  images of every running pod through the Kubernetes API, scans each with Trivy, and pushes
-  the reports to `/ingest` with the namespaces that run them. The app stores the latest
+  images of every running pod through the Kubernetes API, pins each to the digest that pod
+  runs, writes a CycloneDX SBOM of it with Trivy, and pushes the SBOMs to `/ingest` with the
+  namespaces that run them. Trivy only takes the inventory; the app does the matching. With
+  `scanNow=true` the Assets page has a **Scan now** button that starts the job on demand. The app stores the latest
   prioritized posture per image in the authenticated storage API backed by PostgreSQL, so it
   survives Grafana restarts. `/prune` drops images that are no longer running. The **Assets**
   page shows the result. Anything else, such as a CI job, can push to `/ingest` too.

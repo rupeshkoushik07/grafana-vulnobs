@@ -15,5 +15,7 @@ export const testIds = {
   },
   assets: {
     container: 'data-testid assets-container',
+    scanNow: 'data-testid assets-scan-now',
+    scanStatus: 'data-testid assets-scan-status',
   },
 };
