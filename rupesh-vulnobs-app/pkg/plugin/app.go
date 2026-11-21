@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -31,11 +32,20 @@ type App struct {
 	store      *assetStore
 	storeErr   error
 	kev        *kevCache
+	// cluster starts the scan CronJob on demand; nil when Grafana has no
+	// Kubernetes service account, with clusterErr saying why if it's a fault.
+	cluster    *clusterScanner
+	clusterErr error
 }
 
 // appSettings is the app's jsonData.
 type appSettings struct {
 	StorageURL string `json:"storageUrl"`
+
+	// "Scan now". All optional: the defaults fit the Tanka deployment.
+	ScanCronJob         string `json:"scanCronJob"`         // default "vulnobs-scan"
+	KubernetesNamespace string `json:"kubernetesNamespace"` // default: the service account's
+	KubernetesAPIServer string `json:"kubernetesApiServer"` // default: the in-cluster address
 }
 
 // NewApp creates a new *App instance.
@@ -56,6 +66,12 @@ func NewApp(_ context.Context, settings backend.AppInstanceSettings) (instancemg
 			},
 		},
 		kev: newKevCache(),
+	}
+	if cluster, err := newClusterScanner(cfg, defaultServiceAccountDir); err == nil {
+		app.cluster = cluster
+	} else if !errors.Is(err, errNoServiceAccount) {
+		backend.Logger.Warn("Scan now is unavailable", "error", err)
+		app.clusterErr = err
 	}
 	app.store, app.storeErr = newAssetStore(cfg.StorageURL, settings.DecryptedSecureJSONData["storageToken"], app.httpClient)
 

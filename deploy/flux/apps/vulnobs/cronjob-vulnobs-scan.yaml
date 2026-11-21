@@ -28,7 +28,7 @@ spec:
                   -H 'Content-Type: application/json' --data-binary @"$report" > /dev/null
                 pushed=$((pushed + 1))
               done
-              echo "pushed $pushed scans"
+              echo "pushed $pushed SBOMs"
               curl -fsS -X POST "$VULNOBS_API/prune" \
                 -H 'Content-Type: application/json' --data-binary @/work/prune.json
               echo
@@ -97,18 +97,18 @@ spec:
               while IFS="$tab" read -r image query; do
                 [ -n "$image" ] || continue
                 n=$((n + 1))
-                echo "scanning $image"
-                if trivy image --quiet --scanners vuln --format json --timeout 15m \
+                echo "writing an SBOM of $image"
+                if trivy image --quiet --format cyclonedx --timeout 15m \
                     --cache-dir /work/cache --output "/work/reports/$n.json" "$image"; then
                   printf '%s\n' "$query" > "/work/reports/$n.query"
                   ok=$((ok + 1))
                 else
-                  echo "could not scan $image; skipping it" >&2
+                  echo "could not read $image; skipping it" >&2
                   rm -f "/work/reports/$n.json"
                   failed=$((failed + 1))
                 fi
               done < /work/targets.tsv
-              echo "scanned $ok of $n images ($failed failed)"
+              echo "wrote SBOMs for $ok of $n images ($failed failed)"
             command:
             - /bin/sh
             - -c

@@ -67,7 +67,12 @@ func run(exclude, targetsPath, prunePath, saDir string) error {
 
 	fmt.Printf("found %d images outside namespaces [%s]\n", len(images), exclude)
 	for _, img := range images {
-		fmt.Printf("  %s (%s)\n", img.Ref, strings.Join(img.Namespaces, ", "))
+		line := img.Asset()
+		if img.ScanRef != img.Ref {
+			_, digest, _ := strings.Cut(img.ScanRef, "@")
+			line = fmt.Sprintf("%s pinned to %s", img.Asset(), digest)
+		}
+		fmt.Printf("  %s (%s)\n", line, strings.Join(img.Namespaces, ", "))
 	}
 	return nil
 }

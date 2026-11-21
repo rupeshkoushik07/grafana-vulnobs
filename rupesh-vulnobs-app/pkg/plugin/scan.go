@@ -10,9 +10,14 @@ import (
 	"sync"
 )
 
-// maxPackages caps how many packages we query per scan, to keep the request
-// responsive and gentle on the OSV API.
-const maxPackages = 200
+// maxPackages caps how many packages one scan may contain. OSV is first asked,
+// in batches, which of them have any known vulnerability; only those are then
+// queried in full, so a large image costs a handful of requests rather than
+// one per package.
+const maxPackages = 5000
+
+// osvBatchSize is the most queries OSV accepts in one /v1/querybatch call.
+const osvBatchSize = 1000
 
 // scanConcurrency bounds parallel OSV requests.
 const scanConcurrency = 8
@@ -371,9 +376,35 @@ func grypeTarget(raw json.RawMessage) string {
 	return ""
 }
 
+// vulnerablePackages returns the packages OSV knows at least one vulnerability
+// for, in their original order. If a batch can't be checked, its packages are
+// all kept, so a failed batch costs requests rather than findings.
+func (a *App) vulnerablePackages(ctx context.Context, pkgs []pkgRef) []pkgRef {
+	if len(pkgs) <= scanConcurrency {
+		return pkgs // not worth an extra round trip
+	}
+	out := make([]pkgRef, 0, len(pkgs))
+	for start := 0; start < len(pkgs); start += osvBatchSize {
+		batch := pkgs[start:min(start+osvBatchSize, len(pkgs))]
+		affected, err := a.osvQueryBatch(ctx, batch)
+		if err != nil {
+			out = append(out, batch...)
+			continue
+		}
+		for i, p := range batch {
+			if affected[i] {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
 // scanPackages queries OSV for each package concurrently and returns all
 // matching vulnerabilities as ScanRows, sorted highest-severity first.
 func (a *App) scanPackages(ctx context.Context, pkgs []pkgRef) []ScanRow {
+	pkgs = a.vulnerablePackages(ctx, pkgs)
+
 	sem := make(chan struct{}, scanConcurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex

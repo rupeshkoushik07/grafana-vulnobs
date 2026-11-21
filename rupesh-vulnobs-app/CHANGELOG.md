@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Scan now** — a button on the Assets page starts the cluster scan CronJob on demand,
+  shows the run, and refreshes the list when it finishes. Needs the deployment's opt-in
+  `scanNow` setting; `GET`/`POST /resources/cluster-scan` is the API behind it.
+- **CycloneDX from the cluster scan** — the scan job now pushes a CycloneDX SBOM of each
+  image instead of a Trivy vulnerability report, so every finding comes from the app's own
+  matching against OSV.
+- **Pinned to what runs** — the scan job reads each image by the digest its containers are
+  running, not by a tag that may have moved.
+
+### Fixes
+
+- Scans are no longer cut off at 200 packages. Up to 5,000 are checked, using OSV's batch
+  endpoint to find the affected ones first, so large images cost a few requests instead of
+  one per package.
+
 ## 0.5.2
 
 ### Security and reliability

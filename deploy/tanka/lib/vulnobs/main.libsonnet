@@ -1,8 +1,9 @@
 // Vulnobs stack as plain Jsonnet — no external libraries required.
 // Deploys Grafana (the Vulnobs image, with the app and nested datasource baked in) on a
-// persistent volume, and a CronJob that scans every image running in the
-// cluster with Trivy and pushes the reports to the app's /ingest. Optionally
-// adds a Kyverno policy that refuses to run the Vulnobs image unless it is
+// persistent volume, and a CronJob that builds a CycloneDX SBOM of every image
+// running in the cluster with Trivy and pushes them to the app's /ingest, which
+// matches the packages against OSV. Optionally lets the app start that scan on
+// demand ("Scan now"), and adds a Kyverno policy that refuses to run the Vulnobs image unless it is
 // signed, with an SBOM attestation, by this repo's image workflow.
 {
   new(params):: {
@@ -23,6 +24,13 @@
     },
     // The Vulnobs image runs as Grafana's numeric user 472.
     local nonRoot = containerSecurity { runAsNonRoot: true },
+
+    // "Scan now": the app asks Kubernetes to run the scan CronJob early. Off
+    // unless params.scanNow is set, because it needs what Grafana otherwise
+    // never has: a service account token.
+    local scanNow = std.get(params, 'scanNow', false),
+    local scanCronJob = 'vulnobs-scan',
+    local serviceAccountDir = '/var/run/secrets/kubernetes.io/serviceaccount',
 
     namespace: {
       apiVersion: 'v1',
@@ -65,8 +73,11 @@
           template: {
             metadata: { labels: { app: 'grafana' } },
             spec: {
-              // Grafana doesn't talk to the Kubernetes API.
+              // Grafana doesn't talk to the Kubernetes API, unless "Scan now"
+              // is on: then it gets a short-lived token for an account that can
+              // only start the scan job (see scanNow below).
               automountServiceAccountToken: false,
+              [if scanNow then 'serviceAccountName']: 'vulnobs-grafana',
               // Let the grafana user (uid/gid 472 in the image) write the volume.
               securityContext: podSecurity { fsGroup: 472 },
               containers: [{
@@ -82,7 +93,9 @@
                     valueFrom: { secretKeyRef: { name: 'vulnobs-storage', key: 'storage-token' } },
                   },
                 ],
-                volumeMounts: [{ name: 'data', mountPath: '/var/lib/grafana' }],
+                volumeMounts: [{ name: 'data', mountPath: '/var/lib/grafana' }] + (
+                  if scanNow then [{ name: 'kube-api', mountPath: serviceAccountDir, readOnly: true }] else []
+                ),
                 readinessProbe: { httpGet: { path: '/api/health', port: 3000 }, initialDelaySeconds: 10 },
                 // Grafana also writes outside its data volume (logs, plugin
                 // and temp files), so its root filesystem stays writable.
@@ -92,7 +105,18 @@
                   limits: { memory: '1Gi' },
                 },
               }],
-              volumes: [{ name: 'data', persistentVolumeClaim: { claimName: 'grafana-data' } }],
+              volumes: [{ name: 'data', persistentVolumeClaim: { claimName: 'grafana-data' } }] + (
+                if scanNow then [{
+                  name: 'kube-api',
+                  projected: {
+                    sources: [
+                      { serviceAccountToken: { path: 'token', expirationSeconds: 3600 } },
+                      { configMap: { name: 'kube-root-ca.crt', items: [{ key: 'ca.crt', path: 'ca.crt' }] } },
+                      { downwardAPI: { items: [{ path: 'namespace', fieldRef: { fieldPath: 'metadata.namespace' } }] } },
+                    ],
+                  },
+                }] else []
+              ),
             },
           },
         },
@@ -106,6 +130,44 @@
           selector: { app: 'grafana' },
           ports: [{ name: 'http', port: 3000, targetPort: 3000 }],
         },
+      },
+    },
+
+    // "Scan now": what the app's button needs to start the scan CronJob, in
+    // this namespace only. It can read that one CronJob, and list and create
+    // jobs.
+    //
+    // Know what you are granting. Kubernetes has no "run this CronJob" verb,
+    // so the permission is "create jobs", and whoever can create a job in a
+    // namespace can run any pod there: one that mounts the namespace's secrets
+    // (the storage credentials) or uses the scanner's service account. With
+    // this on, someone who takes over Grafana gets that far. Without it, they
+    // get nothing from Kubernetes. Leave it off where Grafana is exposed to
+    // people you wouldn't give that to.
+    [if std.get(params, 'scanNow', false) then 'scanNow']: {
+      serviceAccount: {
+        apiVersion: 'v1',
+        kind: 'ServiceAccount',
+        metadata: { name: 'vulnobs-grafana', namespace: ns },
+        automountServiceAccountToken: false,
+      },
+
+      role: {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'Role',
+        metadata: { name: 'vulnobs-scan-now', namespace: ns },
+        rules: [
+          { apiGroups: ['batch'], resources: ['cronjobs'], resourceNames: [scanCronJob], verbs: ['get'] },
+          { apiGroups: ['batch'], resources: ['jobs'], verbs: ['create', 'list'] },
+        ],
+      },
+
+      roleBinding: {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'RoleBinding',
+        metadata: { name: 'vulnobs-scan-now', namespace: ns },
+        roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: 'vulnobs-scan-now' },
+        subjects: [{ kind: 'ServiceAccount', name: 'vulnobs-grafana', namespace: ns }],
       },
     },
 
@@ -211,10 +273,15 @@
     // Scheduled cluster scan. Three steps share a scratch volume:
     //  1. discover (Vulnobs image): list the images of every pod outside the
     //     excluded namespaces, using a read-only service account token that
-    //     only this container gets.
-    //  2. trivy: scan each image; one that can't be pulled is skipped.
-    //  3. push (curl): send each report to the app's /ingest, labelled with the
-    //     namespaces that run it, then /prune assets no longer running.
+    //     only this container gets. Each image is pinned to the digest its
+    //     containers actually run, where the kubelet reports one.
+    //  2. trivy: write a CycloneDX SBOM (the package inventory, no findings) of
+    //     each image; one that can't be pulled is skipped. Trivy doesn't match
+    //     vulnerabilities here, so it downloads no vulnerability database.
+    //  3. push (curl): send each SBOM to the app's /ingest, labelled with the
+    //     namespaces that run it, then /prune assets no longer running. The
+    //     app matches the packages against OSV as they are known at that
+    //     moment.
     scanner: {
       serviceAccount: {
         apiVersion: 'v1',
@@ -241,7 +308,7 @@
       cronjob: {
         apiVersion: 'batch/v1',
         kind: 'CronJob',
-        metadata: { name: 'vulnobs-scan', namespace: ns },
+        metadata: { name: scanCronJob, namespace: ns },
         spec: {
           schedule: params.scanSchedule,
           concurrencyPolicy: 'Forbid',
@@ -292,18 +359,18 @@
                         while IFS="$tab" read -r image query; do
                           [ -n "$image" ] || continue
                           n=$((n + 1))
-                          echo "scanning $image"
-                          if trivy image --quiet --scanners vuln --format json --timeout 15m \
+                          echo "writing an SBOM of $image"
+                          if trivy image --quiet --format cyclonedx --timeout 15m \
                               --cache-dir /work/cache --output "/work/reports/$n.json" "$image"; then
                             printf '%s\n' "$query" > "/work/reports/$n.query"
                             ok=$((ok + 1))
                           else
-                            echo "could not scan $image; skipping it" >&2
+                            echo "could not read $image; skipping it" >&2
                             rm -f "/work/reports/$n.json"
                             failed=$((failed + 1))
                           fi
                         done < /work/targets.tsv
-                        echo "scanned $ok of $n images ($failed failed)"
+                        echo "wrote SBOMs for $ok of $n images ($failed failed)"
                       |||],
                       volumeMounts: [{ name: 'work', mountPath: '/work' }],
                       // The upstream Trivy image runs as root and Trivy writes
@@ -334,7 +401,7 @@
                           -H 'Content-Type: application/json' --data-binary @"$report" > /dev/null
                         pushed=$((pushed + 1))
                       done
-                      echo "pushed $pushed scans"
+                      echo "pushed $pushed SBOMs"
                       curl -fsS -X POST "$VULNOBS_API/prune" \
                         -H 'Content-Type: application/json' --data-binary @/work/prune.json
                       echo

@@ -153,7 +153,9 @@ func (a *App) handleIngest(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if len(pkgs) > maxPackages {
+	found := len(pkgs)
+	if found > maxPackages {
+		backend.Logger.Warn("Ingested scan has more packages than are checked", "asset", asset, "packages", found, "checked", maxPackages)
 		pkgs = pkgs[:maxPackages]
 	}
 
@@ -178,6 +180,10 @@ func (a *App) handleIngest(w http.ResponseWriter, req *http.Request) {
 		"kev":         posture.KEV,
 		"counts":      posture.Counts,
 		"lastScanned": posture.LastScanned,
+		// How many packages the report held and how many were checked, so a
+		// pusher can tell when an unusually large report was cut short.
+		"packages":        found,
+		"packagesQueried": len(pkgs),
 	}
 	writeJSON(w, resp)
 }
@@ -290,4 +296,5 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/asset", a.handleAsset)
 	mux.HandleFunc("/prune", a.handlePrune)
 	mux.HandleFunc("/enrich", a.handleEnrich)
+	mux.HandleFunc("/cluster-scan", a.handleClusterScan)
 }

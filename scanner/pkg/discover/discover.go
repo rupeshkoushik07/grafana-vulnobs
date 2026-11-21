@@ -26,8 +26,28 @@ const Source = "cluster"
 
 // Image is one image reference and the namespaces where pods run it.
 type Image struct {
-	Ref        string
+	// Ref is the reference from the pod spec, e.g. "python:3.12". It names the
+	// asset in Vulnobs.
+	Ref string
+	// ScanRef is what the scan job hands to the scanner. When the kubelet
+	// reported the digest of the image a container is actually running, it is
+	// that digest ("docker.io/library/python@sha256:..."), so the result
+	// describes what is deployed even if the tag has moved since. Otherwise it
+	// equals Ref.
+	ScanRef    string
 	Namespaces []string
+
+	asset string // set by Images when Ref alone is ambiguous
+}
+
+// Asset is the name the image is stored under. It is Ref, unless pods run the
+// same reference at different digests (a moved tag, pulled at different
+// times): then each digest is its own asset, "python:3.12@sha256:...".
+func (i Image) Asset() string {
+	if i.asset != "" {
+		return i.asset
+	}
+	return i.Ref
 }
 
 // Client lists pods through the Kubernetes API.
@@ -79,17 +99,45 @@ type podList struct {
 			InitContainers []container `json:"initContainers"`
 		} `json:"spec"`
 		Status struct {
-			Phase string `json:"phase"`
+			Phase                 string            `json:"phase"`
+			ContainerStatuses     []containerStatus `json:"containerStatuses"`
+			InitContainerStatuses []containerStatus `json:"initContainerStatuses"`
 		} `json:"status"`
 	} `json:"items"`
 }
 
 type container struct {
+	Name  string `json:"name"`
 	Image string `json:"image"`
 }
 
+type containerStatus struct {
+	Name    string `json:"name"`
+	ImageID string `json:"imageID"`
+}
+
+// pinnedRef turns a container status imageID into a pullable digest reference,
+// or "" when the runtime reported none. containerd reports
+// "docker.io/library/python@sha256:..."; Docker prefixes it with
+// "docker-pullable://". An image loaded straight into a node (kind load, a
+// local build) has no registry digest: its imageID is a bare "sha256:..." or a
+// tag, which no scanner can pull by.
+func pinnedRef(imageID string) string {
+	id := strings.TrimPrefix(strings.TrimSpace(imageID), "docker-pullable://")
+	repo, digest, ok := strings.Cut(id, "@")
+	if !ok || repo == "" || strings.Contains(repo, "://") {
+		return ""
+	}
+	algo, hex, ok := strings.Cut(digest, ":")
+	if !ok || algo != "sha256" || len(hex) != 64 || strings.Trim(hex, "0123456789abcdef") != "" {
+		return ""
+	}
+	return id
+}
+
 // Images returns every image used by pods that haven't finished, outside the
-// excluded namespaces, sorted by reference.
+// excluded namespaces, sorted by asset name. Each is pinned to the digest its
+// containers run where the kubelet reports one.
 func (c *Client) Images(ctx context.Context, excludeNamespaces []string) ([]Image, error) {
 	excluded := map[string]bool{}
 	for _, ns := range excludeNamespaces {
@@ -98,7 +146,8 @@ func (c *Client) Images(ctx context.Context, excludeNamespaces []string) ([]Imag
 		}
 	}
 
-	namespaces := map[string]map[string]bool{} // image -> namespaces
+	type key struct{ ref, scanRef string }
+	namespaces := map[key]map[string]bool{}
 	next := ""
 	for {
 		page, err := c.listPods(ctx, next)
@@ -110,14 +159,22 @@ func (c *Client) Images(ctx context.Context, excludeNamespaces []string) ([]Imag
 			if excluded[ns] || pod.Status.Phase == "Succeeded" || pod.Status.Phase == "Failed" {
 				continue
 			}
+			running := map[string]string{} // container name -> digest reference
+			for _, st := range append(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses...) {
+				running[st.Name] = pinnedRef(st.ImageID)
+			}
 			for _, ct := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
 				if ct.Image == "" {
 					continue
 				}
-				if namespaces[ct.Image] == nil {
-					namespaces[ct.Image] = map[string]bool{}
+				k := key{ref: ct.Image, scanRef: running[ct.Name]}
+				if k.scanRef == "" {
+					k.scanRef = ct.Image
 				}
-				namespaces[ct.Image][ns] = true
+				if namespaces[k] == nil {
+					namespaces[k] = map[string]bool{}
+				}
+				namespaces[k][ns] = true
 			}
 		}
 		if next = page.Metadata.Continue; next == "" {
@@ -125,16 +182,43 @@ func (c *Client) Images(ctx context.Context, excludeNamespaces []string) ([]Imag
 		}
 	}
 
+	// A container that hasn't started yet has no digest, so its image shows up
+	// under the bare reference next to the pinned one from a running replica.
+	// That is the same image: fold it into the pinned entry.
+	pinned := map[string][]key{}
+	for k := range namespaces {
+		if k.scanRef != k.ref {
+			pinned[k.ref] = append(pinned[k.ref], k)
+		}
+	}
+	for ref, keys := range pinned {
+		unpinned := key{ref: ref, scanRef: ref}
+		if set, ok := namespaces[unpinned]; ok && len(keys) == 1 {
+			for ns := range set {
+				namespaces[keys[0]][ns] = true
+			}
+			delete(namespaces, unpinned)
+		}
+	}
+	variants := map[string]int{}
+	for k := range namespaces {
+		variants[k.ref]++
+	}
+
 	images := make([]Image, 0, len(namespaces))
-	for ref, set := range namespaces {
-		img := Image{Ref: ref}
+	for k, set := range namespaces {
+		img := Image{Ref: k.ref, ScanRef: k.scanRef}
+		if variants[k.ref] > 1 && k.scanRef != k.ref {
+			_, digest, _ := strings.Cut(k.scanRef, "@")
+			img.asset = k.ref + "@" + digest
+		}
 		for ns := range set {
 			img.Namespaces = append(img.Namespaces, ns)
 		}
 		sort.Strings(img.Namespaces)
 		images = append(images, img)
 	}
-	sort.Slice(images, func(i, j int) bool { return images[i].Ref < images[j].Ref })
+	sort.Slice(images, func(i, j int) bool { return images[i].Asset() < images[j].Asset() })
 	return images, nil
 }
 
@@ -170,17 +254,17 @@ func (c *Client) listPods(ctx context.Context, continueToken string) (*podList, 
 // endpoint for an image.
 func IngestQuery(img Image) string {
 	return url.Values{
-		"asset":      {img.Ref},
+		"asset":      {img.Asset()},
 		"source":     {Source},
 		"namespaces": {strings.Join(img.Namespaces, ",")},
 	}.Encode()
 }
 
-// WriteTargets writes one "<image>\t<ingest query>" line per image, for the
-// scan job's shell steps to read.
+// WriteTargets writes one "<reference to scan>\t<ingest query>" line per
+// image, for the scan job's shell steps to read.
 func WriteTargets(w io.Writer, images []Image) error {
 	for _, img := range images {
-		if _, err := fmt.Fprintf(w, "%s\t%s\n", img.Ref, IngestQuery(img)); err != nil {
+		if _, err := fmt.Fprintf(w, "%s\t%s\n", img.ScanRef, IngestQuery(img)); err != nil {
 			return err
 		}
 	}
@@ -193,7 +277,7 @@ func WriteTargets(w io.Writer, images []Image) error {
 func PruneRequest(images []Image) ([]byte, error) {
 	keep := make([]string, 0, len(images))
 	for _, img := range images {
-		keep = append(keep, img.Ref)
+		keep = append(keep, img.Asset())
 	}
 	return json.Marshal(map[string]any{"source": Source, "keep": keep})
 }
