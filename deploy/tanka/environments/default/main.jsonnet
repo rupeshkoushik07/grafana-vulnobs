@@ -12,6 +12,13 @@ function(
   // Off by default: read the note at scanNow in lib/vulnobs/main.libsonnet.
   //   tk apply environments/default --tla-code scanNow=true
   scanNow=false,
+  // Let the app list pods, so the Assets page shows what runs in the cluster
+  // before it has been scanned. Off by default: see showWorkloads in the lib.
+  //   tk apply environments/default --tla-code showWorkloads=true
+  showWorkloads=false,
+  // Scan every image running in the cluster, except in these namespaces. The
+  // workloads view skips the same ones.
+  excludeNamespaces=['kube-system', 'kube-public', 'kube-node-lease', 'local-path-storage'],
 )
   vulnobs.new({
     namespace: 'vulnobs',
@@ -30,9 +37,9 @@ function(
     // signature and SBOM attestation verify. Needs Kyverno in the cluster.
     verifyImageSignatures: false,
 
-    // Scan every image running in the cluster, except in these namespaces.
-    excludeNamespaces: ['kube-system', 'kube-public', 'kube-node-lease', 'local-path-storage'],
+    excludeNamespaces: excludeNamespaces,
     scanSchedule: '0 * * * *',  // hourly
     scanNow: scanNow,
+    showWorkloads: showWorkloads,
     trivyImage: 'ghcr.io/aquasecurity/trivy:0.74.0',
   })

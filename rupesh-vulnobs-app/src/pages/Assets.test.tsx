@@ -161,4 +161,76 @@ describe('Assets page', () => {
       expect(screen.getByTestId(testIds.assets.scanNow)).not.toHaveAttribute('aria-disabled', 'true');
     });
   });
+
+  describe('Workloads', () => {
+    const scanned = { ...summary, asset: 'python:3.12', namespaces: ['shop'] };
+    const pushedByCi = { ...summary, asset: 'ci-build:42', source: 'api', namespaces: [], kev: 0 };
+    const workloads = {
+      available: true,
+      workloads: [
+        {
+          namespace: 'shop',
+          kind: 'Deployment',
+          name: 'catalog',
+          pods: 2,
+          ready: 1,
+          images: [{ image: 'python:3.12', digest: 'sha256:abc' }],
+        },
+        {
+          namespace: 'payments',
+          kind: 'StatefulSet',
+          name: 'ledger',
+          pods: 1,
+          ready: 1,
+          images: [{ image: 'redis:7' }],
+        },
+      ],
+    };
+
+    const mockBackend = (workloadsData: unknown) =>
+      fetchMock.mockImplementation(({ url }: { url: string }) => {
+        if (url.endsWith('/workloads')) {
+          return of({ data: workloadsData });
+        }
+        if (url.endsWith('/cluster-scan')) {
+          return of({ data: { available: false, running: false } });
+        }
+        return of({ data: { assets: [scanned, pushedByCi], storage: { persistent: true } } });
+      });
+
+    const renderPage = () =>
+      render(
+        <MemoryRouter>
+          <AssetsPage />
+        </MemoryRouter>
+      );
+
+    test('shows what runs in the cluster, scanned or not', async () => {
+      mockBackend(workloads);
+      renderPage();
+
+      expect(await screen.findByText('Running in the cluster')).toBeInTheDocument();
+      // The scanned workload links to its findings; the other one says it is waiting.
+      expect(screen.getByText('catalog')).toBeInTheDocument();
+      expect(screen.getByText('1/2')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'python:3.12' })).toBeInTheDocument();
+      expect(screen.getByText('ledger')).toBeInTheDocument();
+      expect(screen.getByText('redis:7')).toBeInTheDocument();
+      expect(screen.getByText('not scanned yet')).toBeInTheDocument();
+      expect(screen.getByText(/1 image has not been scanned yet/)).toBeInTheDocument();
+      // An asset nothing in the cluster runs is still listed, separately.
+      expect(screen.getByText('Other assets')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'ci-build:42' })).toBeInTheDocument();
+    });
+
+    test('falls back to the plain asset list when pods cannot be listed', async () => {
+      mockBackend({ available: false, reason: 'forbidden', workloads: [] });
+      renderPage();
+
+      expect(await screen.findByRole('button', { name: 'python:3.12' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'ci-build:42' })).toBeInTheDocument();
+      expect(screen.queryByTestId(testIds.assets.workloads)).not.toBeInTheDocument();
+      expect(screen.queryByText('not scanned yet')).not.toBeInTheDocument();
+    });
+  });
 });

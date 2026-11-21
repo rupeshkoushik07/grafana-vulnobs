@@ -29,6 +29,12 @@
     // unless params.scanNow is set, because it needs what Grafana otherwise
     // never has: a service account token.
     local scanNow = std.get(params, 'scanNow', false),
+    // Workloads view: the app lists pods, so the Assets page can show what
+    // runs in the cluster before it has been scanned. Also opt-in, for the
+    // same reason.
+    local showWorkloads = std.get(params, 'showWorkloads', false),
+    // Either one means Grafana gets a service account token.
+    local kubeAccess = scanNow || showWorkloads,
     local scanCronJob = 'vulnobs-scan',
     local serviceAccountDir = '/var/run/secrets/kubernetes.io/serviceaccount',
 
@@ -74,10 +80,11 @@
             metadata: { labels: { app: 'grafana' } },
             spec: {
               // Grafana doesn't talk to the Kubernetes API, unless "Scan now"
-              // is on: then it gets a short-lived token for an account that can
-              // only start the scan job (see scanNow below).
+              // or the workloads view is on: then it gets a short-lived token
+              // for an account that can only do what those need (see
+              // kubeAccess, scanNow and showWorkloads below).
               automountServiceAccountToken: false,
-              [if scanNow then 'serviceAccountName']: 'vulnobs-grafana',
+              [if kubeAccess then 'serviceAccountName']: 'vulnobs-grafana',
               // Let the grafana user (uid/gid 472 in the image) write the volume.
               securityContext: podSecurity { fsGroup: 472 },
               containers: [{
@@ -94,7 +101,7 @@
                   },
                 ],
                 volumeMounts: [{ name: 'data', mountPath: '/var/lib/grafana' }] + (
-                  if scanNow then [{ name: 'kube-api', mountPath: serviceAccountDir, readOnly: true }] else []
+                  if kubeAccess then [{ name: 'kube-api', mountPath: serviceAccountDir, readOnly: true }] else []
                 ),
                 readinessProbe: { httpGet: { path: '/api/health', port: 3000 }, initialDelaySeconds: 10 },
                 // Grafana also writes outside its data volume (logs, plugin
@@ -106,7 +113,7 @@
                 },
               }],
               volumes: [{ name: 'data', persistentVolumeClaim: { claimName: 'grafana-data' } }] + (
-                if scanNow then [{
+                if kubeAccess then [{
                   name: 'kube-api',
                   projected: {
                     sources: [
@@ -144,14 +151,31 @@
     // this on, someone who takes over Grafana gets that far. Without it, they
     // get nothing from Kubernetes. Leave it off where Grafana is exposed to
     // people you wouldn't give that to.
-    [if std.get(params, 'scanNow', false) then 'scanNow']: {
+    // The app's identity in Kubernetes, when it has one at all.
+    [if std.get(params, 'scanNow', false) || std.get(params, 'showWorkloads', false) then 'kubeAccess']: {
       serviceAccount: {
         apiVersion: 'v1',
         kind: 'ServiceAccount',
         metadata: { name: 'vulnobs-grafana', namespace: ns },
         automountServiceAccountToken: false,
       },
+    },
 
+    // Workloads view: the app may list pods, cluster-wide, and nothing else:
+    // the same ClusterRole the scan job uses. Read-only, but it does let
+    // whoever controls Grafana see every pod's name, image and environment
+    // variables set inline in the pod spec.
+    [if std.get(params, 'showWorkloads', false) then 'showWorkloads']: {
+      clusterRoleBinding: {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRoleBinding',
+        metadata: { name: 'vulnobs-grafana-workloads' },
+        roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'ClusterRole', name: 'vulnobs-scanner' },
+        subjects: [{ kind: 'ServiceAccount', name: 'vulnobs-grafana', namespace: ns }],
+      },
+    },
+
+    [if std.get(params, 'scanNow', false) then 'scanNow']: {
       role: {
         apiVersion: 'rbac.authorization.k8s.io/v1',
         kind: 'Role',

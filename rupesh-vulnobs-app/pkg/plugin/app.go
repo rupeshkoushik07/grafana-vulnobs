@@ -36,6 +36,9 @@ type App struct {
 	// Kubernetes service account, with clusterErr saying why if it's a fault.
 	cluster    *clusterScanner
 	clusterErr error
+	// excludeNamespaces are left out of the workloads list; nil means "what
+	// the scan job skips".
+	excludeNamespaces []string
 }
 
 // appSettings is the app's jsonData.
@@ -46,6 +49,11 @@ type appSettings struct {
 	ScanCronJob         string `json:"scanCronJob"`         // default "vulnobs-scan"
 	KubernetesNamespace string `json:"kubernetesNamespace"` // default: the service account's
 	KubernetesAPIServer string `json:"kubernetesApiServer"` // default: the in-cluster address
+
+	// Namespaces left out of the workloads list. Default: the ones the scan
+	// CronJob skips, read from the CronJob when the app may read it; set this
+	// only to make the page differ from the scan.
+	ExcludeNamespaces []string `json:"excludeNamespaces"`
 }
 
 // NewApp creates a new *App instance.
@@ -73,6 +81,7 @@ func NewApp(_ context.Context, settings backend.AppInstanceSettings) (instancemg
 		backend.Logger.Warn("Scan now is unavailable", "error", err)
 		app.clusterErr = err
 	}
+	app.excludeNamespaces = cfg.ExcludeNamespaces
 	app.store, app.storeErr = newAssetStore(cfg.StorageURL, settings.DecryptedSecureJSONData["storageToken"], app.httpClient)
 
 	// Use a httpadapter (provided by the SDK) for resource calls. This allows us

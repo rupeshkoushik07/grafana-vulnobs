@@ -1,0 +1,75 @@
+# Demo workloads for tools/kind-demo.sh: a few deliberately old images in three
+# namespaces, so the Assets page has something to find. Do not run these
+# anywhere that matters; payments-api is a known-vulnerable Log4Shell test app.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: payments
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger-cache
+  namespace: payments
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: ledger-cache}
+  template:
+    metadata:
+      labels: {app: ledger-cache}
+    spec:
+      containers:
+        - name: ledger-cache
+          image: redis:5-alpine
+          resources:
+            limits: {memory: 384Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog
+  namespace: shop
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: catalog}
+  template:
+    metadata:
+      labels: {app: catalog}
+    spec:
+      containers:
+        - name: catalog
+          image: python:3.8-alpine
+          command: ["sleep", "infinity"]
+          resources:
+            limits: {memory: 384Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edge-proxy
+  namespace: platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: edge-proxy}
+  template:
+    metadata:
+      labels: {app: edge-proxy}
+    spec:
+      containers:
+        - name: edge-proxy
+          image: traefik:v2.4
+          resources:
+            limits: {memory: 384Mi}

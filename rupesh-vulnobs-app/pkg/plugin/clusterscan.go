@@ -352,6 +352,7 @@ func (c *clusterScanner) start(ctx context.Context) (*ClusterScanStatus, error) 
 }
 
 // explainKubeError turns an API failure into something an operator can act on.
+// A 404 can only come from the scan CronJob lookup: lists don't return it.
 func (c *clusterScanner) explainKubeError(err error) (int, string) {
 	var ke kubeError
 	if !errors.As(err, &ke) {

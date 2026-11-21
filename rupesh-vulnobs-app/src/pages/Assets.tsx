@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { css } from '@emotion/css';
 import { lastValueFrom } from 'rxjs';
@@ -54,6 +54,58 @@ export interface ClusterScanStatus {
 
 const SCAN_POLL_MS = 5000;
 
+interface WorkloadImage {
+  image: string;
+  digest?: string;
+}
+
+export interface Workload {
+  namespace: string;
+  kind: string;
+  name: string;
+  pods: number;
+  ready: number;
+  images: WorkloadImage[];
+}
+
+// Answer of GET /workloads: what runs in the cluster right now, scanned or not.
+interface WorkloadsResponse {
+  available: boolean;
+  reason?: string;
+  workloads: Workload[];
+}
+
+// One image of one workload, with its scan result if there is one.
+interface WorkloadRow {
+  id: string;
+  workload: Workload;
+  image: string;
+  asset?: AssetSummary;
+}
+
+// New deployments should appear on their own, without a click.
+const WORKLOADS_POLL_MS = 15000;
+
+// The scan job stores an image under its reference, or under
+// "<reference>@<digest>" when one tag runs at several digests.
+function assetFor(img: WorkloadImage, byName: Map<string, AssetSummary>): AssetSummary | undefined {
+  return (img.digest ? byName.get(`${img.image}@${img.digest}`) : undefined) ?? byName.get(img.image);
+}
+
+// Not scanned yet first (they need a scan), then the most urgent findings.
+function compareRows(a: WorkloadRow, b: WorkloadRow): number {
+  if (!a.asset || !b.asset) {
+    return a.asset ? 1 : b.asset ? -1 : a.id.localeCompare(b.id);
+  }
+  return (
+    b.asset.kev - a.asset.kev ||
+    (b.asset.counts?.CRITICAL ?? 0) - (a.asset.counts?.CRITICAL ?? 0) ||
+    (b.asset.counts?.HIGH ?? 0) - (a.asset.counts?.HIGH ?? 0) ||
+    b.asset.total - a.asset.total ||
+    a.id.localeCompare(b.id)
+  );
+}
+
 function errorMessage(e: unknown, fallback: string): string {
   const err = e as { data?: { error?: string; message?: string }; statusText?: string };
   return err?.data?.error ?? err?.data?.message ?? err?.statusText ?? fallback;
@@ -103,7 +155,56 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
   const refresh = () => {
     setLoading(true);
     fetchAssets();
+    fetchWorkloads();
   };
+
+  // Workloads: what runs in the cluster, whether or not it has been scanned.
+  // Only there when the backend may list pods; otherwise the page is the
+  // plain list of scanned assets.
+  const [workloads, setWorkloads] = useState<WorkloadsResponse | null>(null);
+  const fetchWorkloads = useCallback(
+    () =>
+      lastValueFrom(getBackendSrv().fetch<WorkloadsResponse>({ url: `${API}/workloads`, showErrorAlert: false }))
+        .then((resp) => setWorkloads(resp.data))
+        .catch(() => setWorkloads(null)),
+    []
+  );
+
+  useEffect(() => {
+    fetchWorkloads();
+  }, [fetchWorkloads]);
+
+  const showWorkloads = Boolean(workloads?.available);
+  useEffect(() => {
+    if (!showWorkloads) {
+      return;
+    }
+    const timer = setInterval(fetchWorkloads, WORKLOADS_POLL_MS);
+    return () => clearInterval(timer);
+  }, [showWorkloads, fetchWorkloads]);
+
+  const { workloadRows, otherAssets } = useMemo(() => {
+    const assets = data?.assets ?? [];
+    const byName = new Map(assets.map((a) => [a.asset, a]));
+    const matched = new Set<string>();
+    const rows: WorkloadRow[] = [];
+    for (const w of workloads?.workloads ?? []) {
+      for (const img of w.images ?? []) {
+        const asset = assetFor(img, byName);
+        if (asset) {
+          matched.add(asset.asset);
+        }
+        rows.push({
+          id: `${w.namespace}/${w.kind}/${w.name}/${img.image}@${img.digest ?? ''}`,
+          workload: w,
+          image: img.image,
+          asset,
+        });
+      }
+    }
+    rows.sort(compareRows);
+    return { workloadRows: rows, otherAssets: assets.filter((a) => !matched.has(a.asset)) };
+  }, [workloads, data]);
 
   // "Scan now": only offered when the backend says it can start the scan
   // CronJob (it runs in Kubernetes with a service account allowed to).
@@ -129,6 +230,7 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
   useEffect(() => {
     if (wasRunning.current && !running) {
       fetchAssets();
+      fetchWorkloads();
     }
     wasRunning.current = running;
     if (!running) {
@@ -136,7 +238,7 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
     }
     const timer = setInterval(fetchScan, SCAN_POLL_MS);
     return () => clearInterval(timer);
-  }, [running, fetchScan, fetchAssets]);
+  }, [running, fetchScan, fetchAssets, fetchWorkloads]);
 
   const startScan = () => {
     setStarting(true);
@@ -174,14 +276,7 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
     {
       id: 'severity',
       header: 'Vulnerabilities',
-      cell: ({ row: { original: a } }) => (
-        <span className={s.badges}>
-          {SEVERITY_ORDER.filter((sev) => a.counts?.[sev]).map((sev) => (
-            <Badge key={sev} text={`${a.counts[sev]} ${sev}`} color={severityColor(sev)} />
-          ))}
-          {a.total === 0 && <Badge text="none known" color="green" />}
-        </span>
-      ),
+      cell: ({ row: { original: a } }) => vulnerabilityBadges(a),
     },
     {
       id: 'kev',
@@ -200,6 +295,71 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
       cell: ({ row: { original: a } }) => <span>{dateTimeFormatTimeAgo(a.lastScanned)}</span>,
     },
   ];
+
+  const vulnerabilityBadges = (a: AssetSummary) => (
+    <span className={s.badges}>
+      {SEVERITY_ORDER.filter((sev) => a.counts?.[sev]).map((sev) => (
+        <Badge key={sev} text={`${a.counts[sev]} ${sev}`} color={severityColor(sev)} />
+      ))}
+      {a.total === 0 && <Badge text="none known" color="green" />}
+    </span>
+  );
+
+  const workloadColumns: Array<Column<WorkloadRow>> = [
+    {
+      id: 'workload',
+      header: 'Workload',
+      cell: ({ row: { original: r } }) => (
+        <span>
+          <span className={s.workloadName}>{r.workload.name}</span> <span className={s.muted}>{r.workload.kind}</span>
+        </span>
+      ),
+    },
+    {
+      id: 'namespace',
+      header: 'Namespace',
+      cell: ({ row: { original: r } }) => <span>{r.workload.namespace}</span>,
+    },
+    {
+      id: 'pods',
+      header: 'Pods ready',
+      cell: ({ row: { original: r } }) => (
+        <span>
+          {r.workload.ready}/{r.workload.pods}
+        </span>
+      ),
+    },
+    {
+      id: 'image',
+      header: 'Image',
+      cell: ({ row: { original: r } }) =>
+        r.asset ? (
+          <Button fill="text" size="sm" className={s.assetButton} onClick={() => onSelect(r.asset!.asset)}>
+            {r.image}
+          </Button>
+        ) : (
+          <span>{r.image}</span>
+        ),
+    },
+    {
+      id: 'severity',
+      header: 'Vulnerabilities',
+      cell: ({ row: { original: r } }) =>
+        r.asset ? vulnerabilityBadges(r.asset) : <Badge text="not scanned yet" color="orange" icon="clock-nine" />,
+    },
+    {
+      id: 'kev',
+      header: 'Actively exploited',
+      cell: ({ row: { original: r } }) => <span>{!r.asset ? '—' : r.asset.kev > 0 ? `🔥 ${r.asset.kev}` : '0'}</span>,
+    },
+    {
+      id: 'lastScanned',
+      header: 'Last scanned',
+      cell: ({ row: { original: r } }) => <span>{r.asset ? dateTimeFormatTimeAgo(r.asset.lastScanned) : '—'}</span>,
+    },
+  ];
+
+  const unscanned = workloadRows.filter((r) => !r.asset).length;
 
   return (
     <>
@@ -249,7 +409,32 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
               save them to disk.
             </Alert>
           )}
-          {data.assets.length > 0 ? (
+          {showWorkloads && (
+            <div data-testid={testIds.assets.workloads}>
+              <h4 className={s.sectionTitle}>Running in the cluster</h4>
+              {workloadRows.length > 0 ? (
+                <>
+                  {unscanned > 0 && (
+                    <p className={s.scanLine}>
+                      {unscanned === 1 ? '1 image has' : `${unscanned} images have`} not been scanned yet.
+                      {scan?.available ? ' Scan now picks them up.' : ' The next scheduled scan picks them up.'}
+                    </p>
+                  )}
+                  <InteractiveTable columns={workloadColumns} data={workloadRows} getRowId={(r) => r.id} />
+                </>
+              ) : (
+                <p className={s.scanLine}>Nothing is running outside the excluded namespaces.</p>
+              )}
+              {otherAssets.length > 0 && (
+                <>
+                  <h4 className={s.sectionTitle}>Other assets</h4>
+                  <p className={s.scanLine}>Scanned, but not running in the cluster now: pushed by something else.</p>
+                  <InteractiveTable columns={columns} data={otherAssets} getRowId={(a) => a.asset} />
+                </>
+              )}
+            </div>
+          )}
+          {showWorkloads ? null : data.assets.length > 0 ? (
             <InteractiveTable columns={columns} data={data.assets} getRowId={(a) => a.asset} />
           ) : (
             <Alert title="No scanned assets yet" severity="info">
@@ -372,6 +557,16 @@ const getStyles = (theme: GrafanaTheme2) => ({
     color: ${theme.colors.text.secondary};
     max-width: 780px;
     margin: 0;
+  `,
+  sectionTitle: css`
+    margin: ${theme.spacing(2, 0, 1)};
+  `,
+  workloadName: css`
+    font-weight: ${theme.typography.fontWeightMedium};
+  `,
+  muted: css`
+    color: ${theme.colors.text.secondary};
+    font-size: ${theme.typography.bodySmall.fontSize};
   `,
   actions: css`
     display: flex;

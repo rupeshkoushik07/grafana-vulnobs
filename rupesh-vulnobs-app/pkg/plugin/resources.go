@@ -297,4 +297,5 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/prune", a.handlePrune)
 	mux.HandleFunc("/enrich", a.handleEnrich)
 	mux.HandleFunc("/cluster-scan", a.handleClusterScan)
+	mux.HandleFunc("/workloads", a.handleWorkloads)
 }

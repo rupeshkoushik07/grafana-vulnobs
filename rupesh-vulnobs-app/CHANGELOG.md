@@ -4,6 +4,10 @@
 
 ### Features
 
+- **Workloads view** — with the deployment's opt-in `showWorkloads` setting, the Assets page
+  lists what is running in the cluster (workload, namespace, pods, image) next to its
+  findings, and marks what has not been scanned yet. `GET /resources/workloads` is the API
+  behind it; it needs to list pods and nothing else.
 - **Scan now** — a button on the Assets page starts the cluster scan CronJob on demand,
   shows the run, and refreshes the list when it finishes. Needs the deployment's opt-in
   `scanNow` setting; `GET`/`POST /resources/cluster-scan` is the API behind it.
@@ -15,6 +19,7 @@
 
 ### Fixes
 
+- Update `golang.org/x/net` to 0.62.0 (CVE-2026-78661, CVE-2026-78669).
 - Scans are no longer cut off at 200 packages. Up to 5,000 are checked, using OSV's batch
   endpoint to find the affected ones first, so large images cost a few requests instead of
   one per package.

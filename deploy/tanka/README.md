@@ -15,6 +15,11 @@ Kubernetes:
   for any image with an actively exploited (CISA KEV) vulnerability.
 - Optionally, a **Scan now** button on the Assets page that starts that job on demand
   instead of waiting for the schedule.
+- Optionally, a **workloads view**: the Assets page lists what is running in the cluster,
+  scanned or not, so a new deployment shows up as "not scanned yet" within seconds.
+
+To try all of it on your own machine in one command, see
+[`tools/kind-demo.sh`](../../tools/kind-demo.sh).
 - Optionally, a **Kyverno policy** that refuses to run the Vulnobs image unless its signature
   and SBOM attestation verify.
 
@@ -60,7 +65,9 @@ deploy/tanka/
 | ServiceAccount | `vulnobs-scanner` | identity of the scan job |
 | ClusterRole, ClusterRoleBinding | `vulnobs-scanner` | lets the scan job **list pods**, nothing else |
 | CronJob | `vulnobs-scan` | discover images → CycloneDX SBOM (Trivy) → push to `/ingest` → prune (see below) |
-| ServiceAccount, Role, RoleBinding | `vulnobs-grafana`, `vulnobs-scan-now` | only with `scanNow=true` — lets the app start the scan job (see below) |
+| ServiceAccount | `vulnobs-grafana` | only with `scanNow=true` or `showWorkloads=true` — the app's identity in Kubernetes |
+| Role, RoleBinding | `vulnobs-scan-now` | only with `scanNow=true` — lets the app start the scan job (see below) |
+| ClusterRoleBinding | `vulnobs-grafana-workloads` | only with `showWorkloads=true` — lets the app **list pods** (see below) |
 | ClusterPolicy | `vulnobs-verify-image` | only with `verifyImageSignatures: true` — see below |
 
 ## How the cluster scan works
@@ -178,6 +185,29 @@ The app's settings (`jsonData`) take three optional overrides for other layouts:
 `scanCronJob` (default `vulnobs-scan`), `kubernetesNamespace` (default: the service
 account's) and `kubernetesApiServer` (default: the in-cluster address).
 
+### See your workloads before they are scanned
+
+By default the Assets page only knows what a scan has pushed: a workload deployed five
+minutes ago is invisible until the next run. Deploy with `showWorkloads=true` and the page
+lists what is running now, one row per workload and image, with its pods, and either its
+findings or **not scanned yet**. It refreshes every 15 seconds. Scanned assets that nothing
+in the cluster runs (pushed by CI, say) are listed separately below.
+
+```bash
+tk apply environments/default --tla-code showWorkloads=true --tla-code scanNow=true
+```
+
+This is opt-in too. It gives the `vulnobs-grafana` service account the scan job's
+ClusterRole: **list pods**, in every namespace, and nothing else. The app works out which
+Deployment, StatefulSet, DaemonSet or Job a pod belongs to from the pod itself, so it needs
+no access to those objects. It is read-only, but a pod listing includes every pod's name,
+image and any environment variables written inline in its spec, so whoever controls Grafana
+can read those.
+
+The page leaves out the namespaces the scan job skips. With `scanNow=true` it reads that
+list from the CronJob, so the two can't drift; without it, it uses the default list, or
+`excludeNamespaces` in the app's settings (`jsonData`) if you set one.
+
 The alert rule is in **Alerting → Alert rules → Vulnobs**. It sends notifications to
 Grafana's default contact point; point that at Slack, email, PagerDuty or wherever you want
 them.
@@ -192,12 +222,13 @@ editing any file, for example `tk apply environments/default --tla-str imageTag=
 | `imageRepository` | `ghcr.io/rupeshkoushik07/grafana-vulnobs` | Vulnobs image |
 | `imageTag` | `main` | image tag (`main`, a release version like `0.3.0`, or `sha-<commit>`) |
 | `scanNow` | `false` | give the app what its **Scan now** button needs (`--tla-code scanNow=true`); read [Scan now](#scan-now-from-the-assets-page) first |
+| `showWorkloads` | `false` | let the app list pods, for the [workloads view](#see-your-workloads-before-they-are-scanned) (`--tla-code showWorkloads=true`) |
+| `excludeNamespaces` | `kube-system`, `kube-public`, `kube-node-lease`, `local-path-storage` | namespaces whose pods are not scanned or listed (`--tla-code 'excludeNamespaces=["kube-system","…"]'`) |
 
 Set these in `environments/default/main.jsonnet`:
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `excludeNamespaces` | `kube-system`, `kube-public`, `kube-node-lease`, `local-path-storage` | namespaces whose pods are not scanned |
 | `scanSchedule` | `0 * * * *` | scan cadence (cron) |
 | `trivyImage` | `ghcr.io/aquasecurity/trivy:0.74.0` | image of the step that writes the SBOMs |
 | `storageSize` | `1Gi` | size of Grafana's data volume |
