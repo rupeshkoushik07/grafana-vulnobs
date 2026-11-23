@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -159,13 +160,27 @@ func (a *App) fetchEPSS(ctx context.Context, cves []string) map[string]float64 {
 	return out
 }
 
-// priorityScore ranks a finding: KEV (actively exploited) dominates, then EPSS,
-// then the CVSS severity bucket as a tie-breaker.
+// priorityScore ranks a finding in a strict order: on the CISA KEV list first,
+// then by EPSS, and only then by severity. The three are packed into one integer
+// so that sorting by it gives exactly that order: severity (0..4) can never
+// outweigh any visible EPSS difference (EPSS is kept to 0.01%), and EPSS can
+// never outweigh KEV.
 func priorityScore(severityScore int, epss float64, kev bool) int {
-	s := severityScore * 10 // 0..40 from the severity bucket
-	s += int(epss * 100)    // 0..100 from exploit probability
+	if epss < 0 {
+		epss = 0
+	}
+	if epss > 1 {
+		epss = 1
+	}
+	if severityScore < 0 {
+		severityScore = 0
+	}
+	if severityScore > 9 {
+		severityScore = 9
+	}
+	s := int(math.Round(epss*10000))*10 + severityScore // 0..100009
 	if kev {
-		s += 1000 // actively exploited outranks everything
+		s += 1000000 // actively exploited outranks everything
 	}
 	return s
 }
