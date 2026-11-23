@@ -2,7 +2,7 @@ import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { of, throwError } from 'rxjs';
 import { render, screen, fireEvent } from '@testing-library/react';
-import AssetsPage from './Assets';
+import AssetsPage, { samplesFromFrames } from './Assets';
 import { testIds } from '../components/testIds';
 
 const fetchMock = jest.fn();
@@ -232,5 +232,278 @@ describe('Assets page', () => {
       expect(screen.queryByTestId(testIds.assets.workloads)).not.toBeInTheDocument();
       expect(screen.queryByText('not scanned yet')).not.toBeInTheDocument();
     });
+  });
+  // The app's remote mode: Grafana has no access to Kubernetes. Workloads come
+  // from kube-state-metrics through a Prometheus data source, and Scan now is
+  // a request the in-cluster scan agent picks up.
+  describe('Remote mode', () => {
+    const scanned = { ...summary, asset: 'python:3.12', namespaces: ['shop'] };
+    const queries = {
+      containers: 'group by (namespace, pod, container, image, image_spec, image_id) (kube_pod_container_info{})',
+      owners: 'group by (namespace, pod, owner_kind, owner_name, owner_is_controller) (kube_pod_owner{})',
+      present: 'count(kube_pod_container_info{})',
+    };
+    const instructions = {
+      available: true,
+      source: 'prometheus',
+      prometheus: { datasourceUid: 'prom-uid', queries },
+      workloads: [],
+    };
+    // One frame per series, labels on the value field: how Grafana answers an instant query.
+    const series = (labels: Record<string, string>) => ({
+      schema: {
+        fields: [
+          { name: 'Time', type: 'time' },
+          { name: 'Value', type: 'number', labels },
+        ],
+      },
+      data: { values: [[1], [1]] },
+    });
+    const container = { namespace: 'shop', pod: 'catalog-1', container: 'app', image_spec: 'python:3.12' };
+    const dsAnswer = {
+      results: {
+        containers: { status: 200, frames: [series(container)] },
+        owners: { status: 200, frames: [] },
+        present: { status: 200, frames: [series({})] },
+      },
+    };
+    const mapped = {
+      available: true,
+      source: 'prometheus',
+      workloads: [
+        {
+          namespace: 'shop',
+          kind: 'Deployment',
+          name: 'catalog',
+          pods: 2,
+          ready: 1,
+          images: [{ image: 'python:3.12' }],
+        },
+        {
+          namespace: 'payments',
+          kind: 'StatefulSet',
+          name: 'ledger',
+          pods: 1,
+          ready: 1,
+          images: [{ image: 'redis:7' }],
+        },
+      ],
+    };
+    const agentIdle = {
+      available: true,
+      mode: 'agent',
+      cronJob: 'vulnobs-scan',
+      namespace: 'vulnobs',
+      schedule: '0 * * * *',
+      running: false,
+    };
+
+    interface Call {
+      url: string;
+      method?: string;
+      data?: unknown;
+    }
+    // ds: what the data source answers; scan: what /cluster-scan answers to GET and POST.
+    const mockBackend = (opts: {
+      ds?: () => unknown;
+      workloads?: unknown;
+      scanGet?: unknown;
+      scanPost?: () => unknown;
+    }) =>
+      fetchMock.mockImplementation(({ url, method }: Call) => {
+        if (url === '/api/ds/query') {
+          return opts.ds ? opts.ds() : of({ data: dsAnswer });
+        }
+        if (url.endsWith('/workloads')) {
+          return of({ data: method === 'POST' ? mapped : (opts.workloads ?? instructions) });
+        }
+        if (url.endsWith('/cluster-scan')) {
+          return method === 'POST' && opts.scanPost
+            ? opts.scanPost()
+            : of({ data: opts.scanGet ?? { available: false, mode: 'agent', running: false } });
+        }
+        return of({ data: { assets: [scanned], storage: { persistent: true } } });
+      });
+
+    const renderPage = () =>
+      render(
+        <MemoryRouter>
+          <AssetsPage />
+        </MemoryRouter>
+      );
+    const calls = (match: (c: Call) => boolean) => fetchMock.mock.calls.map(([c]) => c as Call).filter(match);
+
+    test('builds the workloads list from the Prometheus data source', async () => {
+      mockBackend({});
+      renderPage();
+
+      expect(await screen.findByText('Running in the cluster')).toBeInTheDocument();
+      expect(screen.getByText(/From kube-state-metrics in Prometheus/)).toBeInTheDocument();
+      // Same rows as with the Kubernetes API: scanned or waiting.
+      expect(screen.getByText('catalog')).toBeInTheDocument();
+      expect(screen.getByText('1/2')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'python:3.12' })).toBeInTheDocument();
+      expect(screen.getByText('ledger')).toBeInTheDocument();
+      expect(screen.getByText('not scanned yet')).toBeInTheDocument();
+
+      // The app's queries went to the chosen data source, as instant queries...
+      const [ds] = calls((c) => c.url === '/api/ds/query');
+      expect(ds.method).toBe('POST');
+      expect((ds.data as { queries: unknown[] }).queries).toEqual(
+        Object.entries(queries).map(([refId, expr]) => ({
+          refId,
+          expr,
+          datasource: { uid: 'prom-uid' },
+          instant: true,
+          range: false,
+        }))
+      );
+      // ...and the series' labels went back to the app to be mapped.
+      const [post] = calls((c) => c.url.endsWith('/workloads') && c.method === 'POST');
+      expect(post.data).toEqual({ containers: [{ metric: container }], owners: [], present: [{ metric: {} }] });
+    });
+
+    test('says why when the data source cannot be queried', async () => {
+      mockBackend({ ds: () => throwError(() => ({ status: 404, data: { message: 'Data source not found' } })) });
+      renderPage();
+
+      const alert = await screen.findByTestId(testIds.assets.workloadsUnavailable);
+      expect(alert).toHaveTextContent('Data source not found');
+      // The scanned assets are still there, as the plain list.
+      expect(screen.getByRole('button', { name: 'python:3.12' })).toBeInTheDocument();
+      expect(screen.queryByTestId(testIds.assets.workloads)).not.toBeInTheDocument();
+      expect(calls((c) => c.url.endsWith('/workloads') && c.method === 'POST')).toHaveLength(0);
+    });
+
+    test('says why when a query fails or the app has no data source', async () => {
+      mockBackend({
+        ds: () =>
+          throwError(() => ({
+            status: 400,
+            data: { results: { containers: { status: 400, error: 'parse error: unexpected }' } } },
+          })),
+      });
+      const { unmount } = renderPage();
+      expect(await screen.findByTestId(testIds.assets.workloadsUnavailable)).toHaveTextContent('parse error');
+      unmount();
+
+      fetchMock.mockReset();
+      mockBackend({
+        workloads: {
+          available: false,
+          source: 'prometheus',
+          reason: 'No Prometheus data source is chosen',
+          workloads: [],
+        },
+      });
+      renderPage();
+      expect(await screen.findByTestId(testIds.assets.workloadsUnavailable)).toHaveTextContent(
+        'No Prometheus data source is chosen'
+      );
+      expect(calls((c) => c.url === '/api/ds/query')).toHaveLength(0);
+    });
+
+    test('Scan now records a request and waits for the scan agent', async () => {
+      const pending = {
+        ...agentIdle,
+        running: true,
+        request: { id: 'r1', requestedAt: new Date().toISOString(), requestedBy: 'rosa', state: 'pending' },
+      };
+      mockBackend({ scanGet: agentIdle, scanPost: () => of({ data: pending }) });
+      renderPage();
+
+      const button = await screen.findByTestId(testIds.assets.scanNow);
+      expect(button).not.toHaveAttribute('aria-disabled', 'true');
+      fireEvent.click(button);
+
+      expect(await screen.findByText(/requested by rosa/)).toBeInTheDocument();
+      expect(screen.getByText(/Waiting for the scan agent/)).toBeInTheDocument();
+      expect(screen.getByTestId(testIds.assets.scanNow)).toHaveAttribute('aria-disabled', 'true');
+    });
+
+    test('follows the run the agent started, like an in-cluster one', async () => {
+      const running = {
+        ...agentIdle,
+        running: true,
+        last: { name: 'vulnobs-scan-manual-abc12', trigger: 'manual', state: 'running' },
+        request: {
+          id: 'r1',
+          requestedAt: new Date().toISOString(),
+          state: 'running',
+          job: 'vulnobs-scan-manual-abc12',
+        },
+      };
+      mockBackend({ scanGet: running });
+      renderPage();
+
+      expect(await screen.findByText(/is running/)).toBeInTheDocument();
+      expect(screen.getByText('vulnobs-scan-manual-abc12')).toBeInTheDocument();
+      expect(screen.getByTestId(testIds.assets.scanNow)).toHaveAttribute('aria-disabled', 'true');
+    });
+
+    test('shows why the agent could not start the scan', async () => {
+      const failed = {
+        ...agentIdle,
+        request: {
+          id: 'r1',
+          requestedAt: new Date().toISOString(),
+          state: 'failed',
+          message: 'jobs.batch is forbidden',
+        },
+      };
+      mockBackend({ scanGet: failed });
+      renderPage();
+
+      expect(await screen.findByText('The requested cluster scan did not start')).toBeInTheDocument();
+      expect(screen.getByText(/jobs.batch is forbidden/)).toBeInTheDocument();
+      // A new attempt is possible.
+      expect(screen.getByTestId(testIds.assets.scanNow)).not.toHaveAttribute('aria-disabled', 'true');
+    });
+
+    test('says why Scan now is off when no agent is connected', async () => {
+      mockBackend({
+        scanGet: { available: false, mode: 'agent', running: false, reason: 'No scan agent has connected yet' },
+      });
+      renderPage();
+
+      expect(await screen.findByText(/No scan agent has connected yet/)).toBeInTheDocument();
+      expect(screen.queryByTestId(testIds.assets.scanNow)).not.toBeInTheDocument();
+    });
+  });
+
+  test('reads series labels from either frame shape', () => {
+    const perSeries = {
+      schema: {
+        fields: [
+          { name: 'Time', type: 'time' },
+          { name: 'Value', type: 'number', labels: { pod: 'a' } },
+        ],
+      },
+      data: { values: [[1], [1]] },
+    };
+    const table = {
+      schema: {
+        fields: [
+          { name: 'Time', type: 'time' },
+          { name: 'namespace', type: 'string' },
+          { name: 'pod', type: 'string' },
+          { name: 'Value', type: 'number' },
+        ],
+      },
+      data: {
+        values: [
+          [1, 1],
+          ['shop', 'shop'],
+          ['b', 'c'],
+          [1, 1],
+        ],
+      },
+    };
+    expect(samplesFromFrames([perSeries, table])).toEqual([
+      { metric: { pod: 'a' } },
+      { metric: { namespace: 'shop', pod: 'b' } },
+      { metric: { namespace: 'shop', pod: 'c' } },
+    ]);
+    expect(samplesFromFrames(undefined)).toEqual([]);
   });
 });

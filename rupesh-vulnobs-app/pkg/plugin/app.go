@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -39,6 +40,16 @@ type App struct {
 	// excludeNamespaces are left out of the workloads list; nil means "what
 	// the scan job skips".
 	excludeNamespaces []string
+
+	// Remote mode (clusterMode "remote"): Grafana runs anywhere and never
+	// talks to Kubernetes. Workloads come from kube-state-metrics through a
+	// Prometheus data source, and "Scan now" is a request the in-cluster scan
+	// agent picks up.
+	remote          bool
+	prometheusUID   string
+	metricsSelector string
+	scannerToken    string
+	scans           *scanQueue
 }
 
 // appSettings is the app's jsonData.
@@ -54,7 +65,21 @@ type appSettings struct {
 	// CronJob skips, read from the CronJob when the app may read it; set this
 	// only to make the page differ from the scan.
 	ExcludeNamespaces []string `json:"excludeNamespaces"`
+
+	// ClusterMode says how the app learns about the cluster. "" or
+	// "in-cluster" (the default): through the Kubernetes API, with the pod's
+	// service account. "remote": without any Kubernetes access.
+	ClusterMode string `json:"clusterMode"`
+	// Remote mode: UID of the Prometheus data source holding
+	// kube-state-metrics series, and an optional label matcher list added to
+	// every query, e.g. `cluster="prod"`.
+	PrometheusDatasourceUID string `json:"prometheusDatasourceUid"`
+	MetricsSelector         string `json:"metricsSelector"`
 }
+
+// clusterModeRemote is the clusterMode in which Grafana needs no access to
+// the Kubernetes API.
+const clusterModeRemote = "remote"
 
 // NewApp creates a new *App instance.
 func NewApp(_ context.Context, settings backend.AppInstanceSettings) (instancemgmt.Instance, error) {
@@ -75,7 +100,13 @@ func NewApp(_ context.Context, settings backend.AppInstanceSettings) (instancemg
 		},
 		kev: newKevCache(),
 	}
-	if cluster, err := newClusterScanner(cfg, defaultServiceAccountDir); err == nil {
+	if strings.TrimSpace(cfg.ClusterMode) == clusterModeRemote {
+		app.remote = true
+		app.prometheusUID = strings.TrimSpace(cfg.PrometheusDatasourceUID)
+		app.metricsSelector = strings.TrimSpace(cfg.MetricsSelector)
+		app.scannerToken = strings.TrimSpace(settings.DecryptedSecureJSONData["scannerToken"])
+		app.scans = sharedScanQueue(app.scannerToken)
+	} else if cluster, err := newClusterScanner(cfg, defaultServiceAccountDir); err == nil {
 		app.cluster = cluster
 	} else if !errors.Is(err, errNoServiceAccount) {
 		backend.Logger.Warn("Scan now is unavailable", "error", err)

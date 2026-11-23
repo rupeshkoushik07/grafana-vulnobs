@@ -298,4 +298,6 @@ func (a *App) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/enrich", a.handleEnrich)
 	mux.HandleFunc("/cluster-scan", a.handleClusterScan)
 	mux.HandleFunc("/workloads", a.handleWorkloads)
+	mux.HandleFunc("/scan-agent/poll", a.handleScanAgentPoll)
+	mux.HandleFunc("/scan-agent/report", a.handleScanAgentReport)
 }

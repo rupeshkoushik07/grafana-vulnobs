@@ -229,6 +229,12 @@ type ClusterScanStatus struct {
 	Schedule  string   `json:"schedule,omitempty"`
 	Running   bool     `json:"running"`
 	Last      *ScanRun `json:"last,omitempty"` // the most recently started run
+	// Mode is "agent" when runs are started by the in-cluster scan agent
+	// instead of by the app itself (clusterMode "remote").
+	Mode string `json:"mode,omitempty"`
+	// Request is the latest "Scan now" request, in that mode, until the run it
+	// started shows up as Last.
+	Request *ScanRequest `json:"request,omitempty"`
 }
 
 func (j kubeJob) run() ScanRun {
@@ -382,6 +388,10 @@ func mayStartScan(ctx context.Context) bool {
 func (a *App) handleClusterScan(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet && req.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "use GET for the status or POST to start a scan")
+		return
+	}
+	if a.remote {
+		a.handleRemoteClusterScan(w, req)
 		return
 	}
 	if a.cluster == nil {
