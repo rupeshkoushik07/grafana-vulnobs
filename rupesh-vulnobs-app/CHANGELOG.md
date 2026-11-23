@@ -4,6 +4,11 @@
 
 ### Features
 
+- **Remote mode: Grafana outside the cluster** — with `clusterMode: remote` the app needs
+  no access to the Kubernetes API. The workloads view is built from kube-state-metrics
+  series, queried through a Prometheus data source chosen in the app's configuration, and
+  **Scan now** records a request that the new in-cluster scan agent (`vulnobs-agent`) picks
+  up, authenticated with a scanner token. The default mode is unchanged.
 - **Workloads view** — with the deployment's opt-in `showWorkloads` setting, the Assets page
   lists what is running in the cluster (workload, namespace, pods, image) next to its
   findings, and marks what has not been scanned yet. `GET /resources/workloads` is the API

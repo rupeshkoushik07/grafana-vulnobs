@@ -3,14 +3,44 @@
 // persistent volume, and a CronJob that builds a CycloneDX SBOM of every image
 // running in the cluster with Trivy and pushes them to the app's /ingest, which
 // matches the packages against OSV. Optionally lets the app start that scan on
-// demand ("Scan now"), and adds a Kyverno policy that refuses to run the Vulnobs image unless it is
+// demand ("Scan now"), or runs without Grafana having any access to the
+// Kubernetes API (grafanaURL, scanAgent), and adds a Kyverno policy that refuses to run the Vulnobs image unless it is
 // signed, with an SBOM attestation, by this repo's image workflow.
 {
   new(params):: {
     local ns = params.namespace,
     local appID = 'rupeshkoushik07-vulnobs-app',
     local image = '%s:%s' % [params.imageRepository, params.imageTag],
-    local appAPI = 'http://grafana.%s.svc:3000/api/plugins/%s/resources' % [ns, appID],
+    // Remote mode: Grafana needs no access to the Kubernetes API, so it can
+    // run anywhere. Two independent switches:
+    //  - grafanaURL: Grafana lives elsewhere, at this address. Grafana and the
+    //    storage API are not deployed here; only the scan job (and the agent)
+    //    are, and they talk to that Grafana.
+    //  - scanAgent: deploy the scan agent, which polls the app for "Scan now"
+    //    requests and starts the scan CronJob for them. It holds the
+    //    permission to create jobs that scanNow would otherwise give Grafana.
+    local grafanaURL = std.get(params, 'grafanaURL', null),
+    local externalGrafana = grafanaURL != null,
+    local scanAgent = std.get(params, 'scanAgent', false),
+    local remote = externalGrafana || scanAgent,
+    local appAPI = (
+      if externalGrafana then std.stripChars(grafanaURL, '/')
+      else 'http://grafana.%s.svc:3000' % ns
+    ) + '/api/plugins/%s/resources' % appID,
+    // Secret holding what the scan job and the agent send to the app:
+    // scanner-token (the app's scanner token) and, for a Grafana that requires
+    // login, grafana-token (a Grafana service account token).
+    local scannerSecret = 'vulnobs-scanner',
+    local scannerEnv = [
+      {
+        name: 'VULNOBS_SCANNER_TOKEN',
+        valueFrom: { secretKeyRef: { name: scannerSecret, key: 'scanner-token' } },
+      },
+      {
+        name: 'VULNOBS_GRAFANA_TOKEN',
+        valueFrom: { secretKeyRef: { name: scannerSecret, key: 'grafana-token', optional: true } },
+      },
+    ],
 
     // Pod hardening (CIS Kubernetes Benchmark section 5, Pod Security
     // Standards). Every container drops all capabilities and can't gain
@@ -38,6 +68,9 @@
     local scanCronJob = 'vulnobs-scan',
     local serviceAccountDir = '/var/run/secrets/kubernetes.io/serviceaccount',
 
+    assert !(remote && kubeAccess) :
+           'scanNow and showWorkloads give Grafana access to the Kubernetes API; grafanaURL and scanAgent are for running without it. Pick one of the two modes.',
+
     namespace: {
       apiVersion: 'v1',
       kind: 'Namespace',
@@ -55,7 +88,7 @@
       },
     },
 
-    grafana: {
+    [if std.get(params, 'grafanaURL', null) == null then 'grafana']: {
       // Grafana's database and plugin state; scan posture lives in PostgreSQL.
       pvc: {
         apiVersion: 'v1',
@@ -99,7 +132,15 @@
                     name: 'VULNOBS_STORAGE_TOKEN',
                     valueFrom: { secretKeyRef: { name: 'vulnobs-storage', key: 'storage-token' } },
                   },
-                ],
+                ] + (
+                  // Remote mode with Grafana still in the cluster: the image's
+                  // provisioning passes these on to the app's settings.
+                  if scanAgent then [
+                    { name: 'VULNOBS_CLUSTER_MODE', value: 'remote' },
+                    { name: 'VULNOBS_PROMETHEUS_DATASOURCE_UID', value: std.get(params, 'prometheusDatasourceUid', '') },
+                    scannerEnv[0],
+                  ] else []
+                ),
                 volumeMounts: [{ name: 'data', mountPath: '/var/lib/grafana' }] + (
                   if kubeAccess then [{ name: 'kube-api', mountPath: serviceAccountDir, readOnly: true }] else []
                 ),
@@ -195,7 +236,84 @@
       },
     },
 
-    storageAPI: {
+    // The scan agent: the only piece that talks to the Kubernetes API on
+    // behalf of "Scan now" in remote mode. It polls the app, and for each
+    // request creates a job from the scan CronJob, in this namespace only.
+    //
+    // The permission is the one scanNow grants ("create jobs" lets its holder
+    // run any pod in the namespace), but here it stays inside the cluster:
+    // someone who takes over Grafana can ask for a scan and nothing more.
+    [if std.get(params, 'scanAgent', false) then 'scanAgent']: {
+      serviceAccount: {
+        apiVersion: 'v1',
+        kind: 'ServiceAccount',
+        metadata: { name: 'vulnobs-scan-agent', namespace: ns },
+        automountServiceAccountToken: false,
+      },
+
+      role: {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'Role',
+        metadata: { name: 'vulnobs-scan-agent', namespace: ns },
+        rules: [
+          { apiGroups: ['batch'], resources: ['cronjobs'], resourceNames: [scanCronJob], verbs: ['get'] },
+          { apiGroups: ['batch'], resources: ['jobs'], verbs: ['create', 'list'] },
+        ],
+      },
+
+      roleBinding: {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'RoleBinding',
+        metadata: { name: 'vulnobs-scan-agent', namespace: ns },
+        roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: 'vulnobs-scan-agent' },
+        subjects: [{ kind: 'ServiceAccount', name: 'vulnobs-scan-agent', namespace: ns }],
+      },
+
+      deployment: {
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: { name: 'vulnobs-scan-agent', namespace: ns, labels: { app: 'vulnobs-scan-agent' } },
+        spec: {
+          replicas: 1,
+          // Two agents would both answer the same request.
+          strategy: { type: 'Recreate' },
+          selector: { matchLabels: { app: 'vulnobs-scan-agent' } },
+          template: {
+            metadata: { labels: { app: 'vulnobs-scan-agent' } },
+            spec: {
+              serviceAccountName: 'vulnobs-scan-agent',
+              automountServiceAccountToken: false,
+              securityContext: podSecurity,
+              containers: [{
+                name: 'agent',
+                image: image,
+                command: ['vulnobs-agent'],
+                args: ['-namespace', ns, '-cronjob', scanCronJob],
+                env: [{ name: 'VULNOBS_API', value: appAPI }] + scannerEnv,
+                volumeMounts: [{ name: 'kube-api', mountPath: serviceAccountDir, readOnly: true }],
+                // A single Go binary that writes no files.
+                securityContext: nonRoot { readOnlyRootFilesystem: true },
+                resources: {
+                  requests: { cpu: '10m', memory: '16Mi' },
+                  limits: { memory: '64Mi' },
+                },
+              }],
+              volumes: [{
+                name: 'kube-api',
+                projected: {
+                  sources: [
+                    { serviceAccountToken: { path: 'token', expirationSeconds: 3600 } },
+                    { configMap: { name: 'kube-root-ca.crt', items: [{ key: 'ca.crt', path: 'ca.crt' }] } },
+                  ],
+                },
+              }],
+            },
+          },
+        },
+      },
+    },
+
+    [if std.get(params, 'grafanaURL', null) == null then 'storageAPI']: {
       deployment: {
         apiVersion: 'apps/v1',
         kind: 'Deployment',
@@ -414,8 +532,8 @@
                     name: 'push',
                     image: 'curlimages/curl:8.22.0',
                     command: ['/bin/sh', '-c'],
-                    env: [{ name: 'VULNOBS_API', value: appAPI }],
-                    args: [|||
+                    env: [{ name: 'VULNOBS_API', value: appAPI }] + (if remote then scannerEnv else []),
+                    local pushScript = |||
                       set -eu
                       pushed=0
                       for q in /work/reports/*.query; do
@@ -429,7 +547,28 @@
                       curl -fsS -X POST "$VULNOBS_API/prune" \
                         -H 'Content-Type: application/json' --data-binary @/work/prune.json
                       echo
-                    |||],
+                    |||,
+                    // Remote mode: the pushes carry the scanner token and, if
+                    // Grafana requires login, a Grafana service account token.
+                    local authSetup = |||
+                      set -eu
+                      set --
+                      if [ -n "${VULNOBS_SCANNER_TOKEN:-}" ]; then
+                        set -- "$@" -H "X-Vulnobs-Scanner-Token: $VULNOBS_SCANNER_TOKEN"
+                      fi
+                      if [ -n "${VULNOBS_GRAFANA_TOKEN:-}" ]; then
+                        set -- "$@" -H "Authorization: Bearer $VULNOBS_GRAFANA_TOKEN"
+                      fi
+                    |||,
+                    args: [
+                      if remote then
+                        std.strReplace(
+                          std.strReplace(pushScript, 'set -eu\n', authSetup),
+                          'curl -fsS -X POST',
+                          'curl -fsS "$@" -X POST'
+                        )
+                      else pushScript,
+                    ],
                     volumeMounts: [{ name: 'work', mountPath: '/work' }],
                     // curlimages/curl names its user (curl_user, uid 100)
                     // rather than its uid, so the kubelet needs the uid to

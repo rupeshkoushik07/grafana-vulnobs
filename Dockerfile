@@ -39,12 +39,13 @@ COPY rupesh-vulnobs-app/ rupesh-vulnobs-app/
 COPY rupesh-vulnobs-datasource/ rupesh-vulnobs-datasource/
 WORKDIR /src/rupesh-vulnobs-app
 RUN mage -v "$(cat /mage-target)"
-# The scan CronJob helper is built from its own module, outside the Grafana
-# plugin source tree.
+# The scan CronJob helper and the scan agent are built from their own module,
+# outside the Grafana plugin source tree.
 WORKDIR /src/scanner
 COPY scanner/go.mod ./
 COPY scanner/ ./
 RUN GOOS=linux GOARCH="$TARGETARCH" go build -trimpath -ldflags="-s -w" -o /out/vulnobs-discover ./cmd/vulnobs-discover
+RUN GOOS=linux GOARCH="$TARGETARCH" go build -trimpath -ldflags="-s -w" -o /out/vulnobs-agent ./cmd/vulnobs-agent
 # The shared asset storage API is a separate service from the Grafana plugin.
 WORKDIR /src/storage-api
 COPY storage-api/go.mod storage-api/go.sum ./
@@ -64,6 +65,7 @@ COPY --from=backend /src/rupesh-vulnobs-datasource/dist/gpx_vulnobs_* /rupeshkou
 FROM scratch AS artifacts
 COPY --from=plugins / /plugins/
 COPY --from=backend /out/vulnobs-discover /bin/vulnobs-discover
+COPY --from=backend /out/vulnobs-agent /bin/vulnobs-agent
 COPY --from=backend /out/vulnobs-storage /bin/vulnobs-storage
 
 # --- Runtime ---
@@ -76,6 +78,7 @@ ENV GF_PATHS_PLUGINS=/usr/share/grafana/plugins-vulnobs \
     GF_PLUGINS_PREINSTALL_DISABLED=true
 COPY --from=plugins / /usr/share/grafana/plugins-vulnobs/
 COPY --from=backend /out/vulnobs-discover /usr/local/bin/vulnobs-discover
+COPY --from=backend /out/vulnobs-agent /usr/local/bin/vulnobs-agent
 COPY --from=backend /out/vulnobs-storage /usr/local/bin/vulnobs-storage
 # Provision the nested data source, the demo dashboard, the app, and an alert
 # rule for actively exploited vulnerabilities.

@@ -50,6 +50,20 @@ export interface ClusterScanStatus {
   schedule?: string;
   running: boolean;
   last?: ScanRun;
+  // 'agent': Grafana has no access to Kubernetes; an agent in the cluster
+  // starts the scan when asked (the app's remote mode).
+  mode?: string;
+  // The latest Scan now request in that mode, until its run shows up as last.
+  request?: ScanRequest;
+}
+
+interface ScanRequest {
+  id: string;
+  requestedAt: string;
+  requestedBy?: string;
+  state: 'pending' | 'running' | 'succeeded' | 'failed';
+  job?: string;
+  message?: string;
 }
 
 const SCAN_POLL_MS = 5000;
@@ -73,6 +87,109 @@ interface WorkloadsResponse {
   available: boolean;
   reason?: string;
   workloads: Workload[];
+  // 'prometheus': built from kube-state-metrics instead of the Kubernetes API.
+  source?: string;
+  // Set on a GET in that mode: the queries to run against the data source,
+  // whose results go back in a POST to get the workloads.
+  prometheus?: { datasourceUid: string; queries: Record<string, string> };
+}
+
+interface PromSample {
+  metric: Record<string, string>;
+}
+
+// The slice of a Grafana data frame that carries labels.
+interface Frame {
+  schema?: { fields?: Array<{ name: string; type?: string; labels?: Record<string, string> }> };
+  data?: { values?: unknown[][] };
+}
+
+interface DsQueryResponse {
+  results?: Record<string, { status?: number; error?: string; frames?: Frame[] }>;
+}
+
+// An instant vector comes back as one frame per series, with the series'
+// labels on its value field. A table-shaped frame (one column per label) is
+// read too, so either answer format works.
+export function samplesFromFrames(frames: Frame[] = []): PromSample[] {
+  const samples: PromSample[] = [];
+  for (const frame of frames) {
+    const fields = frame.schema?.fields ?? [];
+    const labelled = fields.filter((f) => f.type === 'number' && f.labels);
+    if (labelled.length > 0) {
+      labelled.forEach((f) => samples.push({ metric: f.labels! }));
+      continue;
+    }
+    const columns = fields.map((f, i) => ({ f, i })).filter(({ f }) => f.type === 'string');
+    const rows = frame.data?.values?.[0]?.length ?? 0;
+    if (columns.length === 0 && fields.some((f) => f.type === 'number') && rows > 0) {
+      samples.push({ metric: {} }); // a series without labels, such as count(...)
+      continue;
+    }
+    for (let row = 0; columns.length > 0 && row < rows; row++) {
+      const metric: Record<string, string> = {};
+      columns.forEach(({ f, i }) => (metric[f.name] = String(frame.data?.values?.[i]?.[row] ?? '')));
+      samples.push({ metric });
+    }
+  }
+  return samples;
+}
+
+// Remote mode: run the app's kube-state-metrics queries through the chosen
+// Prometheus data source, as the viewer, and let the app turn the series into
+// workloads.
+async function workloadsFromPrometheus(prom: NonNullable<WorkloadsResponse['prometheus']>): Promise<WorkloadsResponse> {
+  const unavailable = (reason: string): WorkloadsResponse => ({
+    available: false,
+    source: 'prometheus',
+    reason,
+    workloads: [],
+  });
+  let results: DsQueryResponse['results'];
+  try {
+    const resp = await lastValueFrom(
+      getBackendSrv().fetch<DsQueryResponse>({
+        url: '/api/ds/query',
+        method: 'POST',
+        showErrorAlert: false,
+        data: {
+          from: 'now-5m',
+          to: 'now',
+          queries: Object.entries(prom.queries).map(([refId, expr]) => ({
+            refId,
+            expr,
+            datasource: { uid: prom.datasourceUid },
+            instant: true,
+            range: false,
+          })),
+        },
+      })
+    );
+    results = resp.data.results;
+  } catch (e) {
+    // A failed query still answers with per-query results that say why.
+    results = (e as { data?: DsQueryResponse })?.data?.results;
+    if (!results) {
+      return unavailable(`Could not query the Prometheus data source: ${errorMessage(e, 'request failed')}`);
+    }
+  }
+  const body: Record<string, PromSample[]> = {};
+  for (const refId of Object.keys(prom.queries)) {
+    const result = results?.[refId];
+    if (result?.error) {
+      return unavailable(`The Prometheus data source refused a query: ${result.error}`);
+    }
+    body[refId] = samplesFromFrames(result?.frames);
+  }
+  const resp = await lastValueFrom(
+    getBackendSrv().fetch<WorkloadsResponse>({
+      url: `${API}/workloads`,
+      method: 'POST',
+      data: body,
+      showErrorAlert: false,
+    })
+  );
+  return resp.data;
 }
 
 // One image of one workload, with its scan result if there is one.
@@ -159,13 +276,17 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
   };
 
   // Workloads: what runs in the cluster, whether or not it has been scanned.
-  // Only there when the backend may list pods; otherwise the page is the
-  // plain list of scanned assets.
+  // Only there when the backend may list pods, or (in remote mode) when a
+  // Prometheus data source has them; otherwise the page is the plain list of
+  // scanned assets.
   const [workloads, setWorkloads] = useState<WorkloadsResponse | null>(null);
   const fetchWorkloads = useCallback(
     () =>
       lastValueFrom(getBackendSrv().fetch<WorkloadsResponse>({ url: `${API}/workloads`, showErrorAlert: false }))
-        .then((resp) => setWorkloads(resp.data))
+        .then((resp) =>
+          resp.data.available && resp.data.prometheus ? workloadsFromPrometheus(resp.data.prometheus) : resp.data
+        )
+        .then(setWorkloads)
         .catch(() => setWorkloads(null)),
     []
   );
@@ -175,13 +296,17 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
   }, [fetchWorkloads]);
 
   const showWorkloads = Boolean(workloads?.available);
+  // In remote mode the admin asked for the list, so say why it isn't there
+  // and keep trying: metrics may just not have arrived yet.
+  const workloadsProblem = workloads && !workloads.available && workloads.source === 'prometheus' ? workloads : null;
+  const pollWorkloads = showWorkloads || Boolean(workloadsProblem);
   useEffect(() => {
-    if (!showWorkloads) {
+    if (!pollWorkloads) {
       return;
     }
     const timer = setInterval(fetchWorkloads, WORKLOADS_POLL_MS);
     return () => clearInterval(timer);
-  }, [showWorkloads, fetchWorkloads]);
+  }, [pollWorkloads, fetchWorkloads]);
 
   const { workloadRows, otherAssets } = useMemo(() => {
     const assets = data?.assets ?? [];
@@ -392,7 +517,24 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
           {scanError}
         </Alert>
       )}
-      {scan?.available && scan.last && <ScanRunLine run={scan.last} schedule={scan.schedule} />}
+      {scan?.available && scan.request?.state === 'failed' && (
+        <Alert title="The requested cluster scan did not start" severity="warning">
+          The scan agent in the cluster could not start it: {scan.request.message || 'no reason given'}.
+        </Alert>
+      )}
+      {scan?.available && scan.request?.state === 'pending' ? (
+        <p className={s.scanLine} data-testid={testIds.assets.scanStatus}>
+          Cluster scan requested{scan.request.requestedBy ? ` by ${scan.request.requestedBy}` : ''}. Waiting for the
+          scan agent in the cluster to pick it up.
+        </p>
+      ) : (
+        scan?.available && scan.last && <ScanRunLine run={scan.last} schedule={scan.schedule} />
+      )}
+      {scan && !scan.available && scan.mode === 'agent' && scan.reason && (
+        <p className={s.scanLine} data-testid={testIds.assets.scanStatus}>
+          Scan now is unavailable. {scan.reason}.
+        </p>
+      )}
 
       {loading && <LoadingPlaceholder text="Loading assets…" />}
       {error && (
@@ -409,9 +551,23 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
               save them to disk.
             </Alert>
           )}
+          {workloadsProblem && (
+            <Alert
+              title="The list of running workloads is unavailable"
+              severity="warning"
+              data-testid={testIds.assets.workloadsUnavailable}
+            >
+              {workloadsProblem.reason}. Scanned assets are listed below.
+            </Alert>
+          )}
           {showWorkloads && (
             <div data-testid={testIds.assets.workloads}>
               <h4 className={s.sectionTitle}>Running in the cluster</h4>
+              {workloads?.source === 'prometheus' && (
+                <p className={s.scanLine}>
+                  From kube-state-metrics in Prometheus. A new workload shows up after its next scrape.
+                </p>
+              )}
               {workloadRows.length > 0 ? (
                 <>
                   {unscanned > 0 && (

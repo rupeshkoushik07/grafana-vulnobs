@@ -314,6 +314,81 @@ tk env set environments/default --server=https://<api>:6443   # target your clus
 tk apply environments/default                                 # diff, then apply
 ```
 
+## Run Grafana outside the cluster
+
+By default the workloads view and the **Scan now** button work by letting the app call the
+Kubernetes API with its pod's service account (`showWorkloads`, `scanNow`), which only works
+while Grafana runs in the cluster it watches. The app's **remote mode** removes that
+requirement: Grafana can run anywhere (another cluster, a VM, a laptop) and never talks to
+Kubernetes. Only the scan job and a small agent run in the cluster, and every connection
+goes from the cluster to Grafana.
+
+```mermaid
+flowchart LR
+    subgraph cluster["Kubernetes cluster"]
+        ksm["kube-state-metrics"]
+        job["Scan CronJob"]
+        agent["Scan agent"]
+        agent -->|"creates a job from"| job
+    end
+    prom[("Prometheus")]
+    subgraph grafana["Grafana, anywhere"]
+        page["Assets page"]
+        app["Vulnobs app backend"]
+        page --> app
+    end
+    ksm -->|"scraped or remote-written"| prom
+    page -->|"queries, through the data source"| prom
+    job -->|"POST /ingest, /prune + scanner token"| app
+    agent -->|"polls for scan requests + scanner token"| app
+```
+
+- **Workloads from Prometheus.** The Assets page builds the list from kube-state-metrics
+  series (`kube_pod_container_info`, `kube_pod_init_container_info`, `kube_pod_owner`,
+  `kube_replicaset_owner`, `kube_pod_status_ready`, `kube_pod_status_phase`), queried
+  through a Prometheus data source you pick in the app's configuration. The queries run as
+  the person looking at the page, so the data source's own permissions apply. The rows and
+  the excluded namespaces are the same as with `showWorkloads`.
+- **Scan now without cluster access.** The button records a request in the app. The scan
+  agent in the cluster polls the app every 10 seconds, starts the scan CronJob for the
+  request, and reports the CronJob's runs back, so the button shows *requested*, *running*
+  and the result as it does in the cluster. The permission to create jobs stays in the
+  cluster, with the agent; someone who takes over Grafana can ask for a scan and nothing
+  more.
+
+**What it needs**
+
+- A Prometheus (or Mimir, Grafana Cloud Metrics, ...) data source in Grafana that holds the
+  cluster's kube-state-metrics series. kube-state-metrics 2.3 or newer exports the
+  `image_spec` label the app matches scanned images by; with an older one, images whose
+  reference the container runtime rewrites (`nginx:1.27` to `docker.io/library/nginx:1.27`)
+  stay "not scanned yet".
+- A **scanner token**: a random string of 32 characters or more, set in the app's
+  configuration and given to the scan job and the agent as a Kubernetes Secret. They send it
+  in the `X-Vulnobs-Scanner-Token` header; the agent's endpoints refuse anything else,
+  whoever is logged in. If your Grafana requires login, they also need a Grafana service
+  account token (role Viewer is enough) to get past Grafana itself.
+- The cluster must be able to reach Grafana over HTTP(S). Nothing needs to reach the cluster.
+
+**Limits**
+
+- A new workload appears after kube-state-metrics has been scraped and the page has
+  refreshed: the scrape interval plus up to 15 seconds, not immediately. A deleted pod can
+  linger for up to five minutes if its series stop without a staleness marker.
+- Scan now starts within one poll of the agent (10 seconds by default), not instantly.
+- Scan requests are kept in memory by the app: a Grafana restart forgets a request the
+  agent has not picked up yet (click again), and several Grafana replicas don't share them.
+- One cluster per app instance. If the Prometheus holds several clusters, set the metrics
+  selector (for example `cluster="prod"`) so only one is listed.
+- The scan job's pushes to `/ingest` and `/prune` carry the scanner token, but the app does
+  not require it there yet: those endpoints are protected by Grafana's own authentication,
+  as before.
+
+Set it up in **Administration → Plugins → Vulnobs → Configuration → Cluster access**, or
+with the Tanka options `grafanaURL` and `scanAgent`:
+[deploy/tanka/README.md](./deploy/tanka/README.md#run-grafana-outside-the-cluster). The
+default mode is unchanged.
+
 ## Supply chain
 
 Every push to `main` and every `v*` tag runs [`image.yml`](./.github/workflows/image.yml),

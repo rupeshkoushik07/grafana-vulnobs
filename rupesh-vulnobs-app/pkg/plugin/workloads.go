@@ -47,6 +47,12 @@ type WorkloadsResponse struct {
 	Available bool       `json:"available"`
 	Reason    string     `json:"reason,omitempty"` // why not, when unavailable
 	Workloads []Workload `json:"workloads"`
+	// Source is "prometheus" when the list is built from kube-state-metrics
+	// instead of the Kubernetes API (clusterMode "remote").
+	Source string `json:"source,omitempty"`
+	// Prometheus tells the page which queries to run, on a GET in that mode;
+	// it posts the answers back to get the workloads.
+	Prometheus *PrometheusQueries `json:"prometheus,omitempty"`
 }
 
 type kubePodList struct {
@@ -139,10 +145,7 @@ func (c *clusterScanner) workloads(ctx context.Context, excludeNamespaces []stri
 		}
 	}
 
-	type key struct{ namespace, kind, name string }
-	byKey := map[key]*Workload{}
-	seenImage := map[key]map[WorkloadImage]bool{}
-
+	set := newWorkloadSet()
 	next := ""
 	for {
 		path := "/api/v1/pods?limit=500"
@@ -158,45 +161,71 @@ func (c *clusterScanner) workloads(ctx context.Context, excludeNamespaces []stri
 			if excluded[ns] || pod.Status.Phase == "Succeeded" || pod.Status.Phase == "Failed" {
 				continue
 			}
-			kind, name := pod.owner()
-			k := key{ns, kind, name}
-			w := byKey[k]
-			if w == nil {
-				w = &Workload{Namespace: ns, Kind: kind, Name: name}
-				byKey[k], seenImage[k] = w, map[WorkloadImage]bool{}
-			}
-			w.Pods++
-			if pod.ready() {
-				w.Ready++
-			}
-
 			digests := map[string]string{}
 			for _, st := range append(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses...) {
 				digests[st.Name] = imageDigest(st.ImageID)
 			}
+			var images []WorkloadImage
 			for _, ct := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
 				if ct.Image == "" {
 					continue
 				}
-				seenImage[k][WorkloadImage{Image: ct.Image, Digest: digests[ct.Name]}] = true
+				images = append(images, WorkloadImage{Image: ct.Image, Digest: digests[ct.Name]})
 			}
+			kind, name := pod.owner()
+			set.addPod(ns, kind, name, pod.ready(), images)
 		}
 		if next = page.Metadata.Continue; next == "" {
 			break
 		}
 	}
+	return set.list(), nil
+}
 
-	out := make([]Workload, 0, len(byKey))
-	for k, w := range byKey {
+// workloadSet groups pods by owner. Both sources of the workloads list (the
+// Kubernetes API and kube-state-metrics) feed it one pod at a time, so they
+// produce the same rows.
+type workloadSet struct {
+	byKey     map[workloadKey]*Workload
+	seenImage map[workloadKey]map[WorkloadImage]bool
+}
+
+type workloadKey struct{ namespace, kind, name string }
+
+func newWorkloadSet() *workloadSet {
+	return &workloadSet{byKey: map[workloadKey]*Workload{}, seenImage: map[workloadKey]map[WorkloadImage]bool{}}
+}
+
+// addPod counts one pod that hasn't finished towards its owner.
+func (s *workloadSet) addPod(namespace, kind, name string, ready bool, images []WorkloadImage) {
+	k := workloadKey{namespace, kind, name}
+	w := s.byKey[k]
+	if w == nil {
+		w = &Workload{Namespace: namespace, Kind: kind, Name: name}
+		s.byKey[k], s.seenImage[k] = w, map[WorkloadImage]bool{}
+	}
+	w.Pods++
+	if ready {
+		w.Ready++
+	}
+	for _, img := range images {
+		s.seenImage[k][img] = true
+	}
+}
+
+// list returns the workloads sorted by namespace, name and kind.
+func (s *workloadSet) list() []Workload {
+	out := make([]Workload, 0, len(s.byKey))
+	for k, w := range s.byKey {
 		// A replica that hasn't started yet reports no digest. If another
 		// replica of the same image does, the digest-less entry is a duplicate.
 		pinned := map[string]bool{}
-		for img := range seenImage[k] {
+		for img := range s.seenImage[k] {
 			if img.Digest != "" {
 				pinned[img.Image] = true
 			}
 		}
-		for img := range seenImage[k] {
+		for img := range s.seenImage[k] {
 			if img.Digest == "" && pinned[img.Image] {
 				continue
 			}
@@ -221,7 +250,7 @@ func (c *clusterScanner) workloads(ctx context.Context, excludeNamespaces []stri
 			return a.Kind < b.Kind
 		}
 	})
-	return out, nil
+	return out
 }
 
 // scanJobExcludes reads the namespaces the scan job skips from the CronJob
@@ -266,7 +295,14 @@ type kubeArgs struct {
 
 // handleWorkloads lists the workloads running in the cluster, for the Assets
 // page to show next to their scan results: GET /resources/workloads
+//
+// In remote mode the app can't ask Kubernetes, so the list comes from
+// kube-state-metrics in two steps (see promworkloads.go).
 func (a *App) handleWorkloads(w http.ResponseWriter, req *http.Request) {
+	if a.remote {
+		a.handlePrometheusWorkloads(w, req)
+		return
+	}
 	if req.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "use GET")
 		return

@@ -50,7 +50,7 @@ deploy/tanka/
 │   ├── main.jsonnet     # the environment — imports the lib and sets parameters
 │   └── spec.json        # Tanka env spec (target apiServer + namespace)
 └── lib/vulnobs/
-    └── main.libsonnet   # the stack: Grafana, scan CronJob and its RBAC, image policy
+    └── main.libsonnet   # the stack: Grafana, scan CronJob and its RBAC, scan agent, image policy
 ```
 
 ## What it renders
@@ -68,6 +68,7 @@ deploy/tanka/
 | ServiceAccount | `vulnobs-grafana` | only with `scanNow=true` or `showWorkloads=true` — the app's identity in Kubernetes |
 | Role, RoleBinding | `vulnobs-scan-now` | only with `scanNow=true` — lets the app start the scan job (see below) |
 | ClusterRoleBinding | `vulnobs-grafana-workloads` | only with `showWorkloads=true` — lets the app **list pods** (see below) |
+| ServiceAccount, Role, RoleBinding, Deployment | `vulnobs-scan-agent` | only with `scanAgent=true` — serves the app's Scan now requests when Grafana has no Kubernetes access (see [below](#run-grafana-outside-the-cluster)) |
 | ClusterPolicy | `vulnobs-verify-image` | only with `verifyImageSignatures: true` — see below |
 
 ## How the cluster scan works
@@ -208,6 +209,64 @@ The page leaves out the namespaces the scan job skips. With `scanNow=true` it re
 list from the CronJob, so the two can't drift; without it, it uses the default list, or
 `excludeNamespaces` in the app's settings (`jsonData`) if you set one.
 
+### Run Grafana outside the cluster
+
+`scanNow` and `showWorkloads` hand Grafana a Kubernetes service account, so Grafana has to
+run in the cluster. The app's remote mode does the same two things without it: the
+workloads list comes from kube-state-metrics in a Prometheus data source, and **Scan now**
+is a request that a small agent in the cluster picks up. Grafana can then run anywhere, and
+only the scan job and the agent run here. What it needs and its limits are in the
+[main README](../../README.md#run-grafana-outside-the-cluster).
+
+**1. In Grafana** (any Grafana with the Vulnobs app installed and its storage configured):
+open **Administration → Plugins → Vulnobs → Configuration**, and under **Cluster access**
+choose *Prometheus and scan agent*, pick the Prometheus data source that holds this
+cluster's kube-state-metrics series, and set a scanner token:
+
+```bash
+openssl rand -hex 32   # the scanner token
+```
+
+Provisioned instead, that is `clusterMode: remote` and `prometheusDatasourceUid` in the
+app's `jsonData` and `scannerToken` in its `secureJsonData`. `metricsSelector` (for example
+`cluster="prod"`) narrows the queries when the Prometheus holds several clusters.
+
+**2. In the cluster**, give the scan job and the agent the same token, then deploy them:
+
+```bash
+kubectl create namespace vulnobs
+kubectl -n vulnobs create secret generic vulnobs-scanner \
+  --from-literal=scanner-token=<the scanner token> \
+  --from-literal=grafana-token=<a Grafana service account token>   # only if Grafana requires login
+
+tk apply environments/default \
+  --tla-str grafanaURL=https://grafana.example.com --tla-code scanAgent=true
+```
+
+With `grafanaURL` set, Grafana, its volume and the storage API are not deployed: the
+environment renders the namespace, the scan CronJob with its pod-listing account, and the
+agent. The scan job pushes its SBOMs to `<grafanaURL>/api/plugins/rupeshkoushik07-vulnobs-app/resources/ingest`,
+and the agent polls `.../scan-agent/poll` every 10 seconds, both with the token in the
+`X-Vulnobs-Scanner-Token` header (and `Authorization: Bearer <grafana-token>` when that key
+is in the Secret). The cluster needs to reach that URL; nothing needs to reach the cluster.
+
+The agent (`vulnobs-scan-agent`) may, in the `vulnobs` namespace only, read the
+`vulnobs-scan` CronJob and list and create jobs: the same permission `scanNow` gives
+Grafana, with the same caveat that whoever holds it can run any pod in the namespace. The
+difference is where it lives. It stays in the cluster, with a process that makes only outbound
+calls, and Grafana gets no Kubernetes credentials at all.
+
+`scanAgent=true` also works without `grafanaURL`, with Grafana still deployed here: the
+app is then put in remote mode through its provisioning (set `prometheusDatasourceUid` to a
+Prometheus data source you add), and the token comes from the same `vulnobs-scanner`
+Secret. That is the quickest way to try the mode on one cluster. `grafanaURL` or
+`scanAgent` cannot be combined with `scanNow` or `showWorkloads`; rendering fails if you
+try.
+
+If the page says *No scan agent has connected yet*, look at the agent's log
+(`kubectl -n vulnobs logs deploy/vulnobs-scan-agent`): a wrong token is a `401`, a Grafana
+that wants a login is a `401` or a redirect, and an unreachable URL is a connection error.
+
 The alert rule is in **Alerting → Alert rules → Vulnobs**. It sends notifications to
 Grafana's default contact point; point that at Slack, email, PagerDuty or wherever you want
 them.
@@ -223,6 +282,9 @@ editing any file, for example `tk apply environments/default --tla-str imageTag=
 | `imageTag` | `main` | image tag (`main`, a release version like `0.3.0`, or `sha-<commit>`) |
 | `scanNow` | `false` | give the app what its **Scan now** button needs (`--tla-code scanNow=true`); read [Scan now](#scan-now-from-the-assets-page) first |
 | `showWorkloads` | `false` | let the app list pods, for the [workloads view](#see-your-workloads-before-they-are-scanned) (`--tla-code showWorkloads=true`) |
+| `grafanaURL` | `null` | Grafana runs elsewhere, at this address: deploy only the scan job (and agent) here. See [Run Grafana outside the cluster](#run-grafana-outside-the-cluster) |
+| `scanAgent` | `false` | deploy the scan agent, which starts the scan for the app's **Scan now** requests (`--tla-code scanAgent=true`) |
+| `prometheusDatasourceUid` | `''` | with `scanAgent=true` and Grafana deployed here: UID of the Prometheus data source the app reads kube-state-metrics from |
 | `excludeNamespaces` | `kube-system`, `kube-public`, `kube-node-lease`, `local-path-storage` | namespaces whose pods are not scanned or listed (`--tla-code 'excludeNamespaces=["kube-system","…"]'`) |
 
 Set these in `environments/default/main.jsonnet`:

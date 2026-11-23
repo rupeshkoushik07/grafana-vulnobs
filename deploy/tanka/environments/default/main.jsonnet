@@ -19,6 +19,16 @@ function(
   // Scan every image running in the cluster, except in these namespaces. The
   // workloads view skips the same ones.
   excludeNamespaces=['kube-system', 'kube-public', 'kube-node-lease', 'local-path-storage'],
+  // Remote mode, for a Grafana that has no access to the Kubernetes API. See
+  // "Run Grafana outside the cluster" in the README next to this directory.
+  // grafanaURL: Grafana runs elsewhere; deploy only the scan job (and agent).
+  //   tk apply environments/default --tla-str grafanaURL=https://grafana.example.com --tla-code scanAgent=true
+  grafanaURL=null,
+  // Deploy the scan agent, which serves the app's "Scan now" requests.
+  scanAgent=false,
+  // With scanAgent and Grafana still deployed here: the Prometheus data source
+  // the app reads kube-state-metrics from.
+  prometheusDatasourceUid='',
 )
   vulnobs.new({
     namespace: 'vulnobs',
@@ -41,5 +51,8 @@ function(
     scanSchedule: '0 * * * *',  // hourly
     scanNow: scanNow,
     showWorkloads: showWorkloads,
+    grafanaURL: grafanaURL,
+    scanAgent: scanAgent,
+    prometheusDatasourceUid: prometheusDatasourceUid,
     trivyImage: 'ghcr.io/aquasecurity/trivy:0.74.0',
   })

@@ -3,6 +3,9 @@ export const testIds = {
     storageToken: 'data-testid ac-storage-token',
     storageUrl: 'data-testid ac-storage-url',
     submit: 'data-testid ac-submit-form',
+    remote: 'data-testid ac-remote',
+    metricsSelector: 'data-testid ac-metrics-selector',
+    scannerToken: 'data-testid ac-scanner-token',
   },
   search: {
     container: 'data-testid search-container',
@@ -18,5 +21,6 @@ export const testIds = {
     scanNow: 'data-testid assets-scan-now',
     scanStatus: 'data-testid assets-scan-status',
     workloads: 'data-testid assets-workloads',
+    workloadsUnavailable: 'data-testid assets-workloads-unavailable',
   },
 };

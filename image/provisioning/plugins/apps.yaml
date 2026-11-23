@@ -8,5 +8,11 @@ apps:
     disabled: false
     jsonData:
       storageUrl: 'http://vulnobs-storage:8080'
+      # Empty unless the deployment sets them: "remote" makes the app use a
+      # Prometheus data source and the scan agent instead of the Kubernetes
+      # API (see deploy/tanka/README.md).
+      clusterMode: '$VULNOBS_CLUSTER_MODE'
+      prometheusDatasourceUid: '$VULNOBS_PROMETHEUS_DATASOURCE_UID'
     secureJsonData:
       storageToken: '$VULNOBS_STORAGE_TOKEN'
+      scannerToken: '$VULNOBS_SCANNER_TOKEN'
