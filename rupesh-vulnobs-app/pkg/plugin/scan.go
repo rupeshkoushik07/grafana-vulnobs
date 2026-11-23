@@ -453,7 +453,8 @@ func (a *App) scanPackages(ctx context.Context, pkgs []pkgRef) []ScanRow {
 	return rows
 }
 
-// enrichRows adds EPSS + KEV exploit intel to each row, sets a priority, and
+// enrichRows adds EPSS + KEV exploit intel to each row, sets a priority (KEV, then
+// EPSS, then severity), and
 // re-sorts the rows so the ones that actually matter float to the top.
 func (a *App) enrichRows(ctx context.Context, rows []ScanRow) {
 	cves := make([]string, 0, len(rows))

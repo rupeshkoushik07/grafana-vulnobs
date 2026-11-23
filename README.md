@@ -235,7 +235,8 @@ flowchart TB
   scan's snapshot.
 - **Enrichment & prioritization (app):** every CVE is enriched with **EPSS** (exploit
   probability) and **CISA KEV** (actively exploited) and given a priority score
-  (`KEV > EPSS > severity`), so a CRITICAL-but-unexploited CVE can rank *below* a
+  (strictly `KEV > EPSS > severity`: severity only breaks ties between findings with the
+  same EPSS), so a CRITICAL-but-unexploited CVE can rank *below* a
   MODERATE-but-exploited one. `/enrich` exposes this engine on its own.
 - **Continuous cluster scanning:** a standalone scanner CronJob, deployed via [Tanka](./deploy/tanka), lists the
   images of every running pod through the Kubernetes API, pins each to the digest that pod
