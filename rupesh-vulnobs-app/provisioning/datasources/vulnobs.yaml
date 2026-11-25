@@ -1,0 +1,3 @@
+# Placeholder, left empty on purpose. docker-compose.yaml mounts the real file over this
+# one. Docker Desktop on macOS cannot create a mount point inside a mounted folder, so
+# the file has to exist in the checkout.
