@@ -4,6 +4,11 @@
 
 ### Features
 
+- **The scan job's pod on the Assets page** — while a cluster scan runs, the workloads view
+  shows the scan job's own pod in a *Scanning now* box: its name, its namespace, the step
+  it is on (finding the images, building the SBOMs, sending them) and the images it runs.
+  It comes from the pod list the view already reads, so it needs no new permission; in
+  remote mode the box is not shown.
 - **Remote mode: Grafana outside the cluster** — with `clusterMode: remote` the app needs
   no access to the Kubernetes API. The workloads view is built from kube-state-metrics
   series, queried through a Prometheus data source chosen in the app's configuration, and

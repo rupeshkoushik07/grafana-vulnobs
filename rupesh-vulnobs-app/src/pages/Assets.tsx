@@ -82,11 +82,35 @@ export interface Workload {
   images: WorkloadImage[];
 }
 
+// A pod of the scan job that is running now.
+export interface ScanPod {
+  namespace: string;
+  job: string;
+  pod: string;
+  // The container that is working: the job's steps run one after another.
+  step?: string;
+  images: string[];
+}
+
+// What the scan job's containers do, for the names the Tanka environment gives them.
+const SCAN_STEPS: Record<string, string> = {
+  discover: 'Step 1 of 3: finding the images that are running',
+  trivy: 'Step 2 of 3: building a package list (SBOM) of each image',
+  push: 'Step 3 of 3: sending the package lists to Vulnobs',
+  done: 'Finishing',
+};
+
+function scanStep(step?: string): string {
+  return !step ? 'Starting' : (SCAN_STEPS[step] ?? `Running ${step}`);
+}
+
 // Answer of GET /workloads: what runs in the cluster right now, scanned or not.
 interface WorkloadsResponse {
   available: boolean;
   reason?: string;
   workloads: Workload[];
+  // The scan job's own pods that are running now (Kubernetes API only).
+  scanPods?: ScanPod[];
   // 'prometheus': built from kube-state-metrics instead of the Kubernetes API.
   source?: string;
   // Set on a GET in that mode: the queries to run against the data source,
@@ -308,6 +332,9 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
     return () => clearInterval(timer);
   }, [pollWorkloads, fetchWorkloads]);
 
+  const followScanPods = showWorkloads && workloads?.source !== 'prometheus';
+  const scanPods = workloads?.scanPods ?? [];
+
   const { workloadRows, otherAssets } = useMemo(() => {
     const assets = data?.assets ?? [];
     const byName = new Map(assets.map((a) => [a.asset, a]));
@@ -361,9 +388,16 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
     if (!running) {
       return;
     }
-    const timer = setInterval(fetchScan, SCAN_POLL_MS);
+    // The scan job's pod and its current step come with the workloads, so
+    // follow those too while it runs (not in remote mode: Prometheus has no steps).
+    const timer = setInterval(() => {
+      fetchScan();
+      if (followScanPods) {
+        fetchWorkloads();
+      }
+    }, SCAN_POLL_MS);
     return () => clearInterval(timer);
-  }, [running, fetchScan, fetchAssets, fetchWorkloads]);
+  }, [running, followScanPods, fetchScan, fetchAssets, fetchWorkloads]);
 
   const startScan = () => {
     setStarting(true);
@@ -484,6 +518,29 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
     },
   ];
 
+  const scanPodColumns: Array<Column<ScanPod>> = [
+    {
+      id: 'pod',
+      header: 'Pod',
+      cell: ({ row: { original: p } }) => (
+        <span>
+          <span className={s.workloadName}>{p.pod}</span> <span className={s.muted}>Job</span>
+        </span>
+      ),
+    },
+    { id: 'namespace', header: 'Namespace', cell: ({ row: { original: p } }) => <span>{p.namespace}</span> },
+    {
+      id: 'step',
+      header: 'Doing now',
+      cell: ({ row: { original: p } }) => <Badge text={scanStep(p.step)} color="blue" icon="sync" />,
+    },
+    {
+      id: 'images',
+      header: 'Runs',
+      cell: ({ row: { original: p } }) => <span className={s.muted}>{p.images.join(', ')}</span>,
+    },
+  ];
+
   const unscanned = workloadRows.filter((r) => !r.asset).length;
 
   return (
@@ -580,6 +637,16 @@ function AssetList({ onSelect }: { onSelect: (asset: string) => void }) {
                 </>
               ) : (
                 <p className={s.scanLine}>Nothing is running outside the excluded namespaces.</p>
+              )}
+              {scanPods.length > 0 && (
+                <div className={s.scanPods} data-testid={testIds.assets.scanPods}>
+                  <h4 className={s.sectionTitle}>Scanning now</h4>
+                  <p className={s.scanLine}>
+                    Scan now started this pod. It is the scan job: a pod of its own that finds the images running
+                    above, builds a package list of each one and sends them to Vulnobs, then exits.
+                  </p>
+                  <InteractiveTable columns={scanPodColumns} data={scanPods} getRowId={(p) => p.pod} />
+                </div>
               )}
               {otherAssets.length > 0 && (
                 <>
@@ -713,6 +780,14 @@ const getStyles = (theme: GrafanaTheme2) => ({
     color: ${theme.colors.text.secondary};
     max-width: 780px;
     margin: 0;
+  `,
+  scanPods: css`
+    margin-top: ${theme.spacing(3)};
+    padding: ${theme.spacing(0.5, 2, 1.5)};
+    border: 1px solid ${theme.colors.info.border};
+    border-left-width: 4px;
+    border-radius: ${theme.shape.radius.default};
+    background: ${theme.colors.info.transparent};
   `,
   sectionTitle: css`
     margin: ${theme.spacing(2, 0, 1)};

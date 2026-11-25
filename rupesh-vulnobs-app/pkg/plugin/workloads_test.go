@@ -42,6 +42,13 @@ var podPages = map[string]string{
 	     "containerStatuses": [{"name": "db", "imageID": "sha256:` + digestB + `"}]}},
 	  {"metadata": {"name": "report-29-xyz", "namespace": "batch", ` + ownedBy("Job", "report-29") + `},
 	   "spec": {"containers": [{"name": "report", "image": "busybox:1.36"}]}, "status": {"phase": "Succeeded"}},
+	  {"metadata": {"name": "vulnobs-scan-manual-abc12-xk2p9", "namespace": "vulnobs", ` + ownedBy("Job", "vulnobs-scan-manual-abc12") + `},
+	   "spec": {"initContainers": [{"name": "discover", "image": "vulnobs:1"}, {"name": "trivy", "image": "trivy:0.74"}], "containers": [{"name": "push", "image": "curl:8"}]},
+	   "status": {"phase": "Pending",
+	     "initContainerStatuses": [{"name": "discover", "state": {"terminated": {"exitCode": 0}}}, {"name": "trivy", "state": {"running": {}}}],
+	     "containerStatuses": [{"name": "push", "state": {"waiting": {}}}]}},
+	  {"metadata": {"name": "vulnobs-scan-29-done", "namespace": "vulnobs", ` + ownedBy("Job", "vulnobs-scan-29") + `},
+	   "spec": {"containers": [{"name": "push", "image": "curl:8"}]}, "status": {"phase": "Succeeded"}},
 	  {"metadata": {"name": "debug", "namespace": "batch"},
 	   "spec": {"containers": [{"name": "sh", "image": "busybox:1.36"}]},
 	   "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]}}
@@ -63,9 +70,17 @@ func servePods(w http.ResponseWriter, r *http.Request) bool {
 
 func TestWorkloads(t *testing.T) {
 	kube := &fakeKube{pods: servePods}
-	got, err := newTestScanner(t, kube).workloads(context.Background(), []string{"kube-system", " "})
+	got, scanPods, err := newTestScanner(t, kube).workloads(context.Background(), []string{"kube-system", " ", "vulnobs"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The scan job's running pod is reported on its own, although its
+	// namespace is excluded, with the step that is working; its finished
+	// pod is not.
+	wantScan := []ScanPod{{Namespace: "vulnobs", Job: "vulnobs-scan-manual-abc12", Pod: "vulnobs-scan-manual-abc12-xk2p9",
+		Step: "trivy", Images: []string{"vulnobs:1", "trivy:0.74", "curl:8"}}}
+	if !reflect.DeepEqual(scanPods, wantScan) {
+		t.Errorf("scan pods:\n got %+v\nwant %+v", scanPods, wantScan)
 	}
 	want := []Workload{
 		// No owner: the pod is its own workload.
@@ -82,6 +97,39 @@ func TestWorkloads(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("workloads:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestScanPodStep(t *testing.T) {
+	c := &clusterScanner{namespace: "vulnobs", cronJob: "vulnobs-scan"}
+	pod := func(status string) kubePod {
+		var p kubePod
+		raw := `{"metadata": {"name": "vulnobs-scan-1-x", "namespace": "vulnobs", ` + ownedBy("Job", "vulnobs-scan-1") + `},
+		  "spec": {"initContainers": [{"name": "discover", "image": "a"}], "containers": [{"name": "push", "image": "b"}]},
+		  "status": {"phase": "Running"` + status + `}}`
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for name, tc := range map[string]struct{ status, want string }{
+		"no container has started": {``, ""},
+		"first step":               {`, "initContainerStatuses": [{"name": "discover", "state": {"running": {}}}]`, "discover"},
+		"last step": {`, "initContainerStatuses": [{"name": "discover", "state": {"terminated": {}}}],
+			"containerStatuses": [{"name": "push", "state": {"running": {}}}]`, "push"},
+		"everything ended": {`, "initContainerStatuses": [{"name": "discover", "state": {"terminated": {}}}],
+			"containerStatuses": [{"name": "push", "state": {"terminated": {}}}]`, scanStepDone},
+	} {
+		got, ok := c.scanPod(pod(tc.status))
+		if !ok || got.Step != tc.want {
+			t.Errorf("%s: step %q (scan pod %v), want %q", name, got.Step, ok, tc.want)
+		}
+	}
+	// Another namespace's job of the same name is not the scan job.
+	other := pod(``)
+	other.Metadata.Namespace = "shop"
+	if _, ok := c.scanPod(other); ok {
+		t.Error("a pod in another namespace was taken for the scan job")
 	}
 }
 

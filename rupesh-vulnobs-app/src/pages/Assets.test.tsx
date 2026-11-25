@@ -205,6 +205,26 @@ describe('Assets page', () => {
         </MemoryRouter>
       );
 
+    test('shows the scan job\'s pod while it runs', async () => {
+      mockBackend({
+        ...workloads,
+        scanPods: [
+          {
+            namespace: 'vulnobs',
+            job: 'vulnobs-scan-manual-abc12',
+            pod: 'vulnobs-scan-manual-abc12-xk2p9',
+            step: 'trivy',
+            images: ['vulnobs:1', 'trivy:0.74'],
+          },
+        ],
+      });
+      renderPage();
+
+      expect(await screen.findByText('Scanning now')).toBeInTheDocument();
+      expect(screen.getByText('vulnobs-scan-manual-abc12-xk2p9')).toBeInTheDocument();
+      expect(screen.getByText(/Step 2 of 3: building a package list/)).toBeInTheDocument();
+    });
+
     test('shows what runs in the cluster, scanned or not', async () => {
       mockBackend(workloads);
       renderPage();

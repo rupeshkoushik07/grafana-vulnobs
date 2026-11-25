@@ -42,11 +42,30 @@ type Workload struct {
 	Images    []WorkloadImage `json:"images"`
 }
 
+// ScanPod is a pod of the cluster scan job that is running now. The page shows
+// it apart from the workloads, so "Scan now" visibly starts something: the scan
+// is a pod of its own, not something Grafana does.
+type ScanPod struct {
+	Namespace string `json:"namespace"`
+	Job       string `json:"job"`
+	Pod       string `json:"pod"`
+	// Step is the container that is working now. The scan job's containers
+	// run one after another (find the images, build the SBOMs, push them).
+	// Empty while the pod is still starting; scanStepDone once every
+	// container has ended and the pod is about to go.
+	Step   string   `json:"step,omitempty"`
+	Images []string `json:"images"`
+}
+
 // WorkloadsResponse is the answer to GET /workloads.
 type WorkloadsResponse struct {
 	Available bool       `json:"available"`
 	Reason    string     `json:"reason,omitempty"` // why not, when unavailable
 	Workloads []Workload `json:"workloads"`
+	// ScanPods are the scan job's own pods that are running now. Only the
+	// Kubernetes API tells; in remote mode the page says the scan is running
+	// without them.
+	ScanPods []ScanPod `json:"scanPods,omitempty"`
 	// Source is "prometheus" when the list is built from kube-state-metrics
 	// instead of the Kubernetes API (clusterMode "remote").
 	Source string `json:"source,omitempty"`
@@ -87,6 +106,44 @@ type kubeContainer struct {
 type kubeContainerStatus struct {
 	Name    string `json:"name"`
 	ImageID string `json:"imageID"`
+	State   struct {
+		Terminated *struct{} `json:"terminated"`
+	} `json:"state"`
+}
+
+// scanStepDone is ScanPod.Step between the last container ending and the pod
+// being reported as finished.
+const scanStepDone = "done"
+
+// scanPod tells whether a pod belongs to a run of the scan CronJob (a Job
+// named "<cronjob>-..." in the CronJob's namespace) and, if so, which of its
+// steps is working.
+func (c *clusterScanner) scanPod(pod kubePod) (ScanPod, bool) {
+	if pod.Metadata.Namespace != c.namespace {
+		return ScanPod{}, false
+	}
+	kind, job := pod.owner()
+	if kind != "Job" || !strings.HasPrefix(job, c.cronJob+"-") {
+		return ScanPod{}, false
+	}
+	done, started := map[string]bool{}, false
+	for _, st := range append(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses...) {
+		started = true
+		done[st.Name] = st.State.Terminated != nil
+	}
+	sp := ScanPod{Namespace: pod.Metadata.Namespace, Job: job, Pod: pod.Metadata.Name, Images: []string{}}
+	for _, ct := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+		if ct.Image != "" {
+			sp.Images = append(sp.Images, ct.Image)
+		}
+		if started && sp.Step == "" && !done[ct.Name] {
+			sp.Step = ct.Name
+		}
+	}
+	if started && sp.Step == "" {
+		sp.Step = scanStepDone
+	}
+	return sp, true
 }
 
 // owner names the workload a pod belongs to. A Deployment's pods are owned by
@@ -137,7 +194,9 @@ func imageDigest(imageID string) string {
 
 // workloads lists what runs in the cluster outside the excluded namespaces,
 // grouped by owner. Finished pods are left out, as the scan job leaves them.
-func (c *clusterScanner) workloads(ctx context.Context, excludeNamespaces []string) ([]Workload, error) {
+// The scan job's own running pods are returned separately, whatever namespace
+// they are in.
+func (c *clusterScanner) workloads(ctx context.Context, excludeNamespaces []string) ([]Workload, []ScanPod, error) {
 	excluded := map[string]bool{}
 	for _, ns := range excludeNamespaces {
 		if ns = strings.TrimSpace(ns); ns != "" {
@@ -146,6 +205,7 @@ func (c *clusterScanner) workloads(ctx context.Context, excludeNamespaces []stri
 	}
 
 	set := newWorkloadSet()
+	var scanPods []ScanPod
 	next := ""
 	for {
 		path := "/api/v1/pods?limit=500"
@@ -154,11 +214,18 @@ func (c *clusterScanner) workloads(ctx context.Context, excludeNamespaces []stri
 		}
 		var page kubePodList
 		if err := c.do(ctx, http.MethodGet, path, nil, &page); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, pod := range page.Items {
 			ns := pod.Metadata.Namespace
-			if excluded[ns] || pod.Status.Phase == "Succeeded" || pod.Status.Phase == "Failed" {
+			if pod.Status.Phase == "Succeeded" || pod.Status.Phase == "Failed" {
+				continue
+			}
+			if sp, ok := c.scanPod(pod); ok {
+				scanPods = append(scanPods, sp)
+				continue
+			}
+			if excluded[ns] {
 				continue
 			}
 			digests := map[string]string{}
@@ -179,7 +246,8 @@ func (c *clusterScanner) workloads(ctx context.Context, excludeNamespaces []stri
 			break
 		}
 	}
-	return set.list(), nil
+	sort.Slice(scanPods, func(i, j int) bool { return scanPods[i].Pod < scanPods[j].Pod })
+	return set.list(), scanPods, nil
 }
 
 // workloadSet groups pods by owner. Both sources of the workloads list (the
@@ -324,7 +392,7 @@ func (a *App) handleWorkloads(w http.ResponseWriter, req *http.Request) {
 			exclude = defaultExcludedNamespaces
 		}
 	}
-	workloads, err := a.cluster.workloads(req.Context(), exclude)
+	workloads, scanPods, err := a.cluster.workloads(req.Context(), exclude)
 	if err != nil {
 		// Not being allowed to list pods is the normal state when the
 		// deployment didn't opt in, so it is an answer, not a failure.
@@ -332,5 +400,5 @@ func (a *App) handleWorkloads(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, WorkloadsResponse{Available: false, Reason: reason, Workloads: []Workload{}})
 		return
 	}
-	writeJSON(w, WorkloadsResponse{Available: true, Workloads: workloads})
+	writeJSON(w, WorkloadsResponse{Available: true, Workloads: workloads, ScanPods: scanPods})
 }

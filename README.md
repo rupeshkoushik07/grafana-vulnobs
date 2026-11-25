@@ -117,7 +117,7 @@ workload has its findings, most urgent first:
 
 **A scan in progress**, started with Scan now:
 
-![Assets page showing the scan job running](docs/screenshots/scan-now-running.png)
+![Assets page during a scan: under the two workloads, a Scanning now box lists the scan job's pod, its namespace and the step it is on](docs/screenshots/scan-now-running.png)
 
 **A workload's image**, with the findings from its CycloneDX SBOM:
 

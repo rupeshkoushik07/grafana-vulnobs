@@ -22,5 +22,6 @@ export const testIds = {
     scanStatus: 'data-testid assets-scan-status',
     workloads: 'data-testid assets-workloads',
     workloadsUnavailable: 'data-testid assets-workloads-unavailable',
+    scanPods: 'data-testid assets-scan-pods',
   },
 };
