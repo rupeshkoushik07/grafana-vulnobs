@@ -21,15 +21,24 @@ is built for `linux/amd64` and `linux/arm64`, so it runs natively on Intel and A
 machines. The storage API requires PostgreSQL; the Grafana image alone is not a complete
 installation.
 
+You need Docker (Docker Desktop on macOS), [Node.js](https://nodejs.org) 22 or newer,
+[Go](https://go.dev/dl/) 1.26, [Mage](https://magefile.org), Python 3 and `openssl`. On macOS:
+`brew install node go mage`, plus Docker Desktop.
+
+The steps below build the plugin backends for both Linux on Intel (`amd64`) and Linux on ARM
+(`arm64`), and Grafana picks the one that matches the machine, so they work unchanged on an
+Intel or Apple Silicon Mac and on Linux.
+
 ```bash
 git clone https://github.com/rupeshkoushik07/grafana-vulnobs.git
 cd grafana-vulnobs/rupesh-vulnobs-app
 npm ci
 npm run build
-mage -v build:linux
+mage -v build:linux build:linuxARM64
 cd ../rupesh-vulnobs-datasource
-mage -v build:linux
-cp dist/gpx_vulnobs_linux_amd64 ../rupesh-vulnobs-app/dist/datasource/
+mage -v build:linux build:linuxARM64
+mkdir -p ../rupesh-vulnobs-app/dist/datasource
+cp dist/gpx_vulnobs_linux_amd64 dist/gpx_vulnobs_linux_arm64 ../rupesh-vulnobs-app/dist/datasource/
 cd ../rupesh-vulnobs-app
 export VULNOBS_TOKEN_SIGNING_KEY="$(openssl rand -hex 32)"
 export VULNOBS_STORAGE_TOKEN="$(python3 ../tools/create-storage-token.py --tenant-id local-dev)"
