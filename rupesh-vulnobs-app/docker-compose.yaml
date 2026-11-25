@@ -41,6 +41,7 @@ services:
     volumes:
       - ../image/provisioning/datasources/vulnobs.yaml:/etc/grafana/provisioning/datasources/vulnobs.yaml
       - ../image/provisioning/plugins/apps.yaml:/etc/grafana/provisioning/plugins/vulnobs.yaml
+      - ../image/provisioning/alerting/vulnobs.yaml:/etc/grafana/provisioning/alerting/vulnobs.yaml
       - ../rupesh-vulnobs-datasource/provisioning/dashboards:/etc/grafana/provisioning/dashboards
 
 volumes:
